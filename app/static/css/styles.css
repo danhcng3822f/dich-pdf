@@ -33,3 +33,35 @@
 .animate-pulse-subtle {
     animation: pulse-subtle 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
+
+/* Beamer Slide Theme Enhancements */
+.beamer-slide-frame {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    border-color: #cbd5e1;
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.08), 0 8px 10px -6px rgba(0, 0, 0, 0.05);
+}
+
+.beamer-frame-title {
+    background: linear-gradient(135deg, #1e3a8a 0%, #1e40af 50%, #312e81 100%);
+}
+
+.beamer-block-standard {
+    border-color: #bfdbfe;
+}
+.beamer-block-standard > div:first-child {
+    background: linear-gradient(90deg, #1d4ed8 0%, #2563eb 100%);
+}
+
+.beamer-block-alert {
+    border-color: #fecdd3;
+}
+.beamer-block-alert > div:first-child {
+    background: linear-gradient(90deg, #dc2626 0%, #e11d48 100%);
+}
+
+.beamer-block-example {
+    border-color: #a7f3d0;
+}
+.beamer-block-example > div:first-child {
+    background: linear-gradient(90deg, #059669 0%, #10b981 100%);
+}

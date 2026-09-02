@@ -346,10 +346,10 @@ document.addEventListener("DOMContentLoaded", () => {
                     </div>
                 </div>
                 <!-- Cột Phải: Bản dịch -->
-                <div class="p-5 flex flex-col justify-start bg-white">
-                    <span class="text-xs text-blue-600 font-medium mb-2 uppercase tracking-wider">Bản dịch AI (${targetLangSelect.options[targetLangSelect.selectedIndex].text})</span>
-                    <div class="prose prose-sm max-w-none text-slate-800 leading-relaxed font-sans select-text translation-body" id="trans-body-${page.page_number}">
-                        ${renderFormattedContent(page.translated_text)}
+                <div class="p-5 flex flex-col justify-start bg-slate-50/50">
+                    <span class="text-xs text-blue-600 font-medium mb-2 uppercase tracking-wider">Bản dịch Slide Hoàn Chỉnh (${targetLangSelect.options[targetLangSelect.selectedIndex].text})</span>
+                    <div class="w-full max-w-none text-slate-800 leading-relaxed font-sans select-text translation-body" id="trans-body-${page.page_number}">
+                        ${renderFormattedContent(page.translated_text, page.page_number)}
                     </div>
                 </div>
             </div>
@@ -454,8 +454,14 @@ document.addEventListener("DOMContentLoaded", () => {
             .replace(/'/g, "&#039;");
     }
 
-    function renderFormattedContent(rawText) {
+    function renderFormattedContent(rawText, pageNumber = 1) {
         if (!rawText) return "";
+        
+        // If Beamer visual renderer is available and content is LaTeX/Beamer, render full visual slide
+        if (window.renderBeamerToHtml) {
+            return window.renderBeamerToHtml(rawText, pageNumber);
+        }
+        
         if (window.marked) {
             try {
                 return window.marked.parse(rawText);
