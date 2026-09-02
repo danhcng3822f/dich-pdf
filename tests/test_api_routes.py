@@ -1,7 +1,10 @@
 import pytest
 from fastapi.testclient import TestClient
 import io
-import pymupdf as fitz
+try:
+    import pymupdf as fitz
+except ImportError:
+    import fitz
 from app.main import app
 
 client = TestClient(app)

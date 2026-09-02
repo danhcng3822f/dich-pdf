@@ -1,4 +1,7 @@
-import fitz
+try:
+    import pymupdf as fitz
+except ImportError:
+    import fitz
 import pytest
 from pathlib import Path
 from app.services.pdf_service import parse_page_ranges, get_pdf_metadata, extract_page_content

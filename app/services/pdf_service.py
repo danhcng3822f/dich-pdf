@@ -1,6 +1,9 @@
 import base64
 from pathlib import Path
-import pymupdf as fitz
+try:
+    import pymupdf as fitz
+except ImportError:
+    import fitz
 
 def parse_page_ranges(range_str: str, total_pages: int) -> list[int]:
     if not range_str or range_str.strip().lower() in ["all", ""]:

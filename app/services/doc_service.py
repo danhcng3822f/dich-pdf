@@ -1,6 +1,9 @@
 from pathlib import Path
 import os
-import pymupdf as fitz
+try:
+    import pymupdf as fitz
+except ImportError:
+    import fitz
 from docx import Document
 from docx.shared import Pt
 from reportlab.lib import colors
