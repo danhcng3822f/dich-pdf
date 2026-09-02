@@ -53,6 +53,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const downloadDocxBtn = document.getElementById("download-docx-btn");
     const downloadPdfBtn = document.getElementById("download-pdf-btn");
     const downloadMdBtn = document.getElementById("download-md-btn");
+    const downloadTexBtn = document.getElementById("download-tex-btn");
 
     // --- Init UI from Config ---
     function populateConfigForm() {
@@ -398,7 +399,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // --- Export Downloads ---
     function setDownloadButtonsEnabled(enabled) {
-        [downloadDocxBtn, downloadPdfBtn, downloadMdBtn].forEach(btn => {
+        [downloadDocxBtn, downloadPdfBtn, downloadMdBtn, downloadTexBtn].forEach(btn => {
+            if (!btn) return;
             btn.disabled = !enabled;
             if (enabled) {
                 btn.classList.remove("opacity-50", "cursor-not-allowed");
@@ -411,6 +413,9 @@ document.addEventListener("DOMContentLoaded", () => {
     downloadDocxBtn.addEventListener("click", () => triggerDownload("docx"));
     downloadPdfBtn.addEventListener("click", () => triggerDownload("pdf"));
     downloadMdBtn.addEventListener("click", () => triggerDownload("md"));
+    if (downloadTexBtn) {
+        downloadTexBtn.addEventListener("click", () => triggerDownload("tex"));
+    }
 
     function triggerDownload(fmt) {
         if (!activeJobId) {

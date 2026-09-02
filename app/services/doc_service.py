@@ -127,3 +127,50 @@ def generate_markdown(translated_pages: list[dict], output_path: Path, doc_title
         
     output_path.write_text("".join(lines), encoding="utf-8")
     return output_path
+
+def generate_latex(translated_pages: list[dict], output_path: Path, doc_title: str = "Translated Document", is_beamer: bool = True) -> Path:
+    if is_beamer:
+        tex_content = [
+            "\\documentclass{beamer}",
+            "\\usepackage[utf8]{inputenc}",
+            "\\usepackage[vietnamese]{babel}",
+            "\\usepackage{amsmath,amssymb,amsfonts}",
+            "\\usepackage{graphicx}",
+            "\\usetheme{Madrid}",
+            "\\usecolortheme{default}",
+            f"\\title{{{doc_title}}}",
+            "\\author{AI PDF Translator}",
+            "\\date{\\today}",
+            "\\begin{document}",
+            "\\frame{\\titlepage}\n"
+        ]
+        for page in translated_pages:
+            page_num = page.get("page_number", 1)
+            raw = page.get("translated_text", "")
+            if "\\begin{frame}" in raw:
+                tex_content.append(raw + "\n")
+            else:
+                tex_content.append(f"\\begin{{frame}}{{Trang {page_num}}}\n{raw}\n\\end{{frame}}\n")
+        tex_content.append("\\end{document}\n")
+    else:
+        tex_content = [
+            "\\documentclass[11pt,a4paper]{article}",
+            "\\usepackage[utf8]{inputenc}",
+            "\\usepackage[vietnamese]{babel}",
+            "\\usepackage{amsmath,amssymb,amsfonts}",
+            "\\usepackage{geometry}",
+            "\\geometry{margin=2.5cm}",
+            f"\\title{{{doc_title}}}",
+            "\\author{AI PDF Translator}",
+            "\\date{\\today}",
+            "\\begin{document}",
+            "\\maketitle\n"
+        ]
+        for page in translated_pages:
+            page_num = page.get("page_number", 1)
+            raw = page.get("translated_text", "")
+            tex_content.append(f"\\section*{{Trang {page_num}}}\n{raw}\n\\newpage\n")
+        tex_content.append("\\end{document}\n")
+        
+    output_path.write_text("\n".join(tex_content), encoding="utf-8")
+    return output_path

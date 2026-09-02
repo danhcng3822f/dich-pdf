@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from app.config import settings
 from app.services.pdf_service import get_pdf_metadata, parse_page_ranges, extract_page_content
 from app.services.ai_service import AIConfig, translate_text, test_api_connection
-from app.services.doc_service import generate_docx, generate_pdf, generate_markdown
+from app.services.doc_service import generate_docx, generate_pdf, generate_markdown, generate_latex
 
 router = APIRouter()
 
@@ -123,13 +123,15 @@ async def translate_stream(req: TranslationStreamRequest):
             docx_path = settings.export_dir / f"{job_id}.docx"
             pdf_out_path = settings.export_dir / f"{job_id}.pdf"
             md_path = settings.export_dir / f"{job_id}.md"
+            tex_path = settings.export_dir / f"{job_id}.tex"
             
             doc_title = f"Bản dịch - {req.target_lang}"
             generate_docx(translated_pages, docx_path, doc_title)
             generate_pdf(translated_pages, pdf_out_path, doc_title)
             generate_markdown(translated_pages, md_path, doc_title)
+            generate_latex(translated_pages, tex_path, doc_title, is_beamer=(req.style == "LaTeX_Beamer"))
             
-            yield f"event: completed\ndata: {json.dumps({'job_id': job_id, 'docx_ready': True, 'pdf_ready': True, 'md_ready': True})}\n\n"
+            yield f"event: completed\ndata: {json.dumps({'job_id': job_id, 'docx_ready': True, 'pdf_ready': True, 'md_ready': True, 'tex_ready': True})}\n\n"
         except Exception as e:
             yield f"event: completed\ndata: {json.dumps({'job_id': job_id, 'error': f'Lỗi xuất file: {str(e)}'})}\n\n"
 
@@ -138,8 +140,8 @@ async def translate_stream(req: TranslationStreamRequest):
 @router.get("/download/{job_id}/{fmt}")
 async def download_file(job_id: str, fmt: str):
     fmt = fmt.lower()
-    if fmt not in ["docx", "pdf", "md"]:
-        raise HTTPException(status_code=400, detail="Định dạng không hỗ trợ (chỉ docx, pdf, md)")
+    if fmt not in ["docx", "pdf", "md", "tex"]:
+        raise HTTPException(status_code=400, detail="Định dạng không hỗ trợ (chỉ docx, pdf, md, tex)")
     
     file_path = settings.export_dir / f"{job_id}.{fmt}"
     if not file_path.exists():
@@ -155,7 +157,8 @@ async def download_file(job_id: str, fmt: str):
     media_types = {
         "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "pdf": "application/pdf",
-        "md": "text/markdown"
+        "md": "text/markdown",
+        "tex": "application/x-tex"
     }
     
     return FileResponse(

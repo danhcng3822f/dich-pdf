@@ -13,6 +13,7 @@ class AIConfig(BaseModel):
 STYLE_DESCRIPTIONS = {
     "Default": "Accurate, natural and context-aware.",
     "Academic": "Formal, academic terminology, rigorous tone.",
+    "LaTeX_Beamer": "LaTeX Beamer / Slide presentation format. Reconstruct into full LaTeX Beamer syntax (\\begin{frame}{Title}... \\end{frame}), enclosing blocks (\\begin{block}{Title}... \\end{block}, alertblock, exampleblock), itemize, columns, and beautiful styling.",
     "Business": "Professional, business and executive friendly tone.",
     "Technical": "Precise technical vocabulary, preserving formulas and code terms.",
     "Casual": "Friendly, easy to understand and conversational tone."
@@ -20,15 +21,31 @@ STYLE_DESCRIPTIONS = {
 
 def build_system_prompt(target_lang: str, style: str, custom_instruction: Optional[str] = None) -> str:
     style_desc = STYLE_DESCRIPTIONS.get(style, STYLE_DESCRIPTIONS["Default"])
+    
+    is_beamer = (style == "LaTeX_Beamer")
+    beamer_rules = ""
+    if is_beamer:
+        beamer_rules = (
+            "\nLATEX BEAMER & SLIDE FORMATTING RULES:\n"
+            "1. Output the translated page in proper LaTeX Beamer code for slides:\n"
+            "   \\begin{frame}{Translated Frame Title}\n"
+            "     \\begin{block}{Section/Block Title}\n"
+            "       Content with LaTeX math and styled bullet points...\n"
+            "     \\end{block}\n"
+            "   \\end{frame}\n"
+            "2. Identify blocks, definitions, theorems, alert blocks, and frame titles from the original slide and wrap them in corresponding Beamer environments (\\begin{block}, \\begin{alertblock}, \\begin{exampleblock}, \\begin{definition}, \\begin{theorem}).\n"
+            "3. If there are columns or side-by-side components, use \\begin{columns} \\column{0.5\\textwidth} ... \\end{columns}.\n"
+        )
+
     prompt = (
-        f"You are a professional document translator specializing in academic, technical and scientific papers. "
+        f"You are a world-class document translator and LaTeX typesetting specialist. "
         f"Translate the given text accurately into {target_lang}.\n"
-        f"Translation Style: {style_desc}\n\n"
+        f"Translation Style: {style_desc}\n{beamer_rules}\n"
         "CRITICAL RULES FOR MATHEMATICAL EQUATIONS & LATEX:\n"
-        "1. PRESERVE ALL LaTeX, mathematical formulas, symbols, and expressions EXACTLY as they appear (e.g., $x_i$, $$\\sum_{i=1}^n x_i$$, \\begin{equation}...\\end{equation}, \\alpha, \\beta, etc.). NEVER translate, alter, or remove LaTeX syntax.\n"
-        "2. Wrap inline math expressions in single dollar signs ($...$) and block/display equations in double dollar signs ($$...$$) or standard LaTeX environments.\n"
+        "1. PRESERVE ALL LaTeX, mathematical formulas, symbols, and expressions EXACTLY as they appear (e.g., $x_i$, $$\\sum_{i=1}^n x_i$$, \\begin{equation}...\\end{equation}, \\alpha, \\beta, etc.). NEVER translate or damage LaTeX math syntax.\n"
+        "2. Wrap inline math expressions in single dollar signs ($...$) and display equations in double dollar signs ($$...$$) or standard LaTeX environments.\n"
         "3. Preserve all citations, reference markers, code snippets, variables, and table structures.\n"
-        "4. Output ONLY the translated text. Do NOT add conversational preamble, notes, or explanations."
+        "4. Output ONLY the translated content. Do NOT add conversational preamble, notes, or explanations."
     )
     if custom_instruction and custom_instruction.strip():
         prompt += f"\n\nAdditional User Instructions: {custom_instruction.strip()}"
