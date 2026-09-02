@@ -5,7 +5,7 @@ def test_build_system_prompt():
     prompt = build_system_prompt("Vietnamese", "Academic")
     assert "Vietnamese" in prompt
     assert "academic" in prompt.lower()
-    assert "Do not add any conversational prelude" in prompt
+    assert "LaTeX" in prompt
 
 @pytest.mark.asyncio
 async def test_translate_text_empty():

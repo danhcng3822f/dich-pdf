@@ -21,15 +21,17 @@ STYLE_DESCRIPTIONS = {
 def build_system_prompt(target_lang: str, style: str, custom_instruction: Optional[str] = None) -> str:
     style_desc = STYLE_DESCRIPTIONS.get(style, STYLE_DESCRIPTIONS["Default"])
     prompt = (
-        f"You are a professional document translator. Translate the given text accurately into {target_lang}.\n"
-        f"Translation Style: {style_desc}\n"
-        "Guidelines:\n"
-        "1. Preserve the original paragraph layout, markdown formats, math equations, code snippets, and variable names.\n"
-        "2. Do not add any conversational prelude, explanation, or notes. Output ONLY the translated text.\n"
-        "3. Maintain high fluency and correct domain terminology."
+        f"You are a professional document translator specializing in academic, technical and scientific papers. "
+        f"Translate the given text accurately into {target_lang}.\n"
+        f"Translation Style: {style_desc}\n\n"
+        "CRITICAL RULES FOR MATHEMATICAL EQUATIONS & LATEX:\n"
+        "1. PRESERVE ALL LaTeX, mathematical formulas, symbols, and expressions EXACTLY as they appear (e.g., $x_i$, $$\\sum_{i=1}^n x_i$$, \\begin{equation}...\\end{equation}, \\alpha, \\beta, etc.). NEVER translate, alter, or remove LaTeX syntax.\n"
+        "2. Wrap inline math expressions in single dollar signs ($...$) and block/display equations in double dollar signs ($$...$$) or standard LaTeX environments.\n"
+        "3. Preserve all citations, reference markers, code snippets, variables, and table structures.\n"
+        "4. Output ONLY the translated text. Do NOT add conversational preamble, notes, or explanations."
     )
     if custom_instruction and custom_instruction.strip():
-        prompt += f"\nAdditional User Instructions: {custom_instruction.strip()}"
+        prompt += f"\n\nAdditional User Instructions: {custom_instruction.strip()}"
     return prompt
 
 async def translate_openai_compatible(text: str, system_prompt: str, config: AIConfig, default_base_url: str, default_model: str) -> str:

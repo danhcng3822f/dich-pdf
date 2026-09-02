@@ -347,8 +347,8 @@ document.addEventListener("DOMContentLoaded", () => {
                 <!-- Cột Phải: Bản dịch -->
                 <div class="p-5 flex flex-col justify-start bg-white">
                     <span class="text-xs text-blue-600 font-medium mb-2 uppercase tracking-wider">Bản dịch AI (${targetLangSelect.options[targetLangSelect.selectedIndex].text})</span>
-                    <div class="prose prose-sm max-w-none text-slate-700 whitespace-pre-wrap leading-relaxed font-sans select-text">
-                        ${escapeHTML(page.translated_text)}
+                    <div class="prose prose-sm max-w-none text-slate-800 leading-relaxed font-sans select-text translation-body" id="trans-body-${page.page_number}">
+                        ${renderFormattedContent(page.translated_text)}
                     </div>
                 </div>
             </div>
@@ -362,6 +362,24 @@ document.addEventListener("DOMContentLoaded", () => {
         });
 
         pagesContainer.appendChild(card);
+
+        // Render LaTeX via KaTeX
+        const bodyEl = card.querySelector(`#trans-body-${page.page_number}`);
+        if (bodyEl && window.renderMathInElement) {
+            try {
+                window.renderMathInElement(bodyEl, {
+                    delimiters: [
+                        { left: "$$", right: "$$", display: true },
+                        { left: "$", right: "$", display: false },
+                        { left: "\\(", right: "\\)", display: false },
+                        { left: "\\[", right: "\\]", display: true }
+                    ],
+                    throwOnError: false
+                });
+            } catch (e) {
+                console.error("KaTeX rendering error:", e);
+            }
+        }
     }
 
     // View mode switch
@@ -429,6 +447,18 @@ document.addEventListener("DOMContentLoaded", () => {
             .replace(/>/g, "&gt;")
             .replace(/"/g, "&quot;")
             .replace(/'/g, "&#039;");
+    }
+
+    function renderFormattedContent(rawText) {
+        if (!rawText) return "";
+        if (window.marked) {
+            try {
+                return window.marked.parse(rawText);
+            } catch (e) {
+                console.error("Markdown parse error:", e);
+            }
+        }
+        return escapeHTML(rawText);
     }
 
     // Initial check
