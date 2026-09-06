@@ -18,6 +18,14 @@ from .adapter import (
     create_adapter,
     normalize_tokens,
 )
+from .pdfinterp import PDFPageInterpreterEx
+from .converter import (
+    PDFConverterEx,
+    Paragraph,
+    OpType,
+    TranslateConverter,
+    patch_page,
+)
 
 __all__ = [
     "get_font_path",
@@ -37,5 +45,10 @@ __all__ = [
     "create_translator",
     "create_adapter",
     "normalize_tokens",
+    "PDFPageInterpreterEx",
+    "PDFConverterEx",
+    "Paragraph",
+    "OpType",
+    "TranslateConverter",
+    "patch_page",
 ]
-
