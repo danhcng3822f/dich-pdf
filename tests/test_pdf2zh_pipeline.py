@@ -85,6 +85,46 @@ def test_create_dual_pdf(tmp_path: Path, sample_pdf: Path):
     doc_dual.close()
 
 
+def test_create_dual_pdf_page_subset(tmp_path: Path, sample_pdf: Path):
+    # 1. Test case where translated PDF has full page count (trans_count != len(page_indices))
+    trans_pdf_path = tmp_path / "sample_subset_trans.pdf"
+    doc_trans = pymupdf.open()
+    p1 = doc_trans.new_page(width=595, height=842)
+    p1.insert_text((72, 100), "Untranslated Page 1", fontsize=18)
+    p2 = doc_trans.new_page(width=595, height=842)
+    p2.insert_text((72, 100), "Translated Chapter 2: Math", fontsize=18)
+    doc_trans.save(str(trans_pdf_path))
+    doc_trans.close()
+
+    dual_out_path = tmp_path / "sample_subset_dual.pdf"
+    result_path = create_dual_pdf(sample_pdf, trans_pdf_path, dual_out_path, page_indices=[1])
+
+    assert result_path.exists()
+    doc_dual = pymupdf.open(str(dual_out_path))
+    # Must have exactly 2 pages (1 orig, 1 trans), NOT all 4 pages
+    assert len(doc_dual) == 2
+    assert "Chapter 2" in doc_dual[0].get_text()
+    assert "Translated Chapter 2" in doc_dual[1].get_text()
+    doc_dual.close()
+
+    # 2. Test case where translated PDF contains only the translated page subset (trans_count == len(page_indices))
+    single_trans_path = tmp_path / "sample_single_subset_trans.pdf"
+    doc_single = pymupdf.open()
+    sp = doc_single.new_page(width=595, height=842)
+    sp.insert_text((72, 100), "Single Translated Chapter 2", fontsize=18)
+    doc_single.save(str(single_trans_path))
+    doc_single.close()
+
+    single_dual_out = tmp_path / "sample_single_subset_dual.pdf"
+    create_dual_pdf(sample_pdf, single_trans_path, single_dual_out, page_indices=[1])
+
+    doc_single_dual = pymupdf.open(str(single_dual_out))
+    assert len(doc_single_dual) == 2
+    assert "Chapter 2" in doc_single_dual[0].get_text()
+    assert "Single Translated Chapter 2" in doc_single_dual[1].get_text()
+    doc_single_dual.close()
+
+
 @pytest.mark.asyncio
 async def test_process_pdf2zh_stream_end_to_end(tmp_path: Path, sample_pdf: Path):
     mono_out = tmp_path / "mono.pdf"
@@ -193,4 +233,9 @@ async def test_process_pdf2zh_stream_single_page(tmp_path: Path, sample_pdf: Pat
     final_event = events[-1]
     assert final_event["event"] == "completed"
     assert final_event["total_pages"] == 1
+
+    assert dual_out.exists()
+    doc_dual = pymupdf.open(str(dual_out))
+    assert len(doc_dual) == 2
+    doc_dual.close()
 
