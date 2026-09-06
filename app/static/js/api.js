@@ -4,15 +4,17 @@
 const STORAGE_KEY = "pdf_trans_ai_config_v1";
 
 const DEFAULT_CONFIG = {
-    provider: "openai",
+    provider: "google",
     api_key: "",
-    model: "gpt-4o-mini",
+    model: "",
     base_url: "",
     custom_prompt: "",
     temperature: 0.3
 };
 
 const DEFAULT_MODELS = {
+    google: "",
+    bing: "",
     openai: "gpt-4o-mini",
     deepseek: "deepseek-chat",
     gemini: "gemini-1.5-flash",
@@ -21,6 +23,15 @@ const DEFAULT_MODELS = {
 };
 
 const API = {
+    isFreeProvider(provider) {
+        const p = (provider || "").toLowerCase();
+        return p === "google" || p === "bing" || p === "google_free" || p === "bing_free";
+    },
+
+    isApiKeyRequired(provider) {
+        return !this.isFreeProvider(provider);
+    },
+
     getConfig() {
         const saved = localStorage.getItem(STORAGE_KEY);
         if (saved) {
