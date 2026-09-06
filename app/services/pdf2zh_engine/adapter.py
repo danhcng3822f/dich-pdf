@@ -87,6 +87,10 @@ class GoogleFreeTranslator(BaseTranslator):
         "zh-tw": "zh-TW",
         "zh-hans": "zh-CN",
         "zh-hant": "zh-TW",
+        "vietnamese": "vi",
+        "vi": "vi",
+        "english": "en",
+        "en": "en",
     }
 
     def __init__(
@@ -141,6 +145,10 @@ class BingFreeTranslator(BaseTranslator):
         "zh-tw": "zh-Hant",
         "zh-hans": "zh-Hans",
         "zh-hant": "zh-Hant",
+        "vietnamese": "vi",
+        "vi": "vi",
+        "english": "en",
+        "en": "en",
     }
 
     def __init__(

@@ -3,8 +3,8 @@ from pydantic import BaseModel, Field
 from typing import Optional
 
 class AIConfig(BaseModel):
-    provider: str = Field(..., description="openai | deepseek | gemini | claude | custom")
-    api_key: str
+    provider: str = Field(..., description="openai | deepseek | gemini | claude | custom | google | google_free | bing | bing_free")
+    api_key: Optional[str] = ""
     model: Optional[str] = None
     base_url: Optional[str] = None
     custom_prompt: Optional[str] = None
@@ -130,6 +130,16 @@ async def translate_text(text: str, target_lang: str, style: str, config: AIConf
         if not config.base_url:
             raise ValueError("Custom provider requires Base URL")
         return await translate_openai_compatible(text, system_prompt, config, config.base_url, config.model or "default")
+    elif provider in ("google", "google_free"):
+        import asyncio
+        from app.services.pdf2zh_engine.adapter import GoogleFreeTranslator
+        translator = GoogleFreeTranslator(lang_in="en", lang_out=target_lang)
+        return await asyncio.to_thread(translator.translate, text)
+    elif provider in ("bing", "bing_free"):
+        import asyncio
+        from app.services.pdf2zh_engine.adapter import BingFreeTranslator
+        translator = BingFreeTranslator(lang_in="en", lang_out=target_lang)
+        return await asyncio.to_thread(translator.translate, text)
     else:
         raise ValueError(f"Unsupported provider: {config.provider}")
 
