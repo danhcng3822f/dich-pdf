@@ -6,11 +6,24 @@ from pathlib import Path
 import shutil
 from typing import Any, Dict, List, Optional, Union
 
-import cv2
 import numpy as np
-import onnx
-import onnxruntime
-from babeldoc.assets.assets import get_doclayout_onnx_model_path
+import httpx
+from PIL import Image
+
+try:
+    import onnx
+except ImportError:
+    onnx = None
+
+try:
+    import onnxruntime
+except ImportError:
+    onnxruntime = None
+
+try:
+    import cv2
+except ImportError:
+    cv2 = None
 
 from app.config import settings
 
@@ -29,6 +42,36 @@ def set_backend(name: str) -> None:
     """Set preferred ONNX Runtime execution backend ('auto', 'cpu', 'cuda', 'dml')."""
     global _preferred_backend
     _preferred_backend = None if name == "auto" else name
+
+
+def _download_model_file(model_name: str, target_path: Path) -> Path:
+    """Download doclayout ONNX model file from mirrors."""
+    urls = [
+        f"https://huggingface.co/wybxc/DocLayout-YOLO-DocStructBench-onnx/resolve/main/{model_name}?download=true",
+        f"https://hf-mirror.com/wybxc/DocLayout-YOLO-DocStructBench-onnx/resolve/main/{model_name}?download=true",
+    ]
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_target = target_path.with_suffix(".tmp")
+    for url in urls:
+        try:
+            logger.info("Downloading model %s from %s...", model_name, url)
+            with httpx.Client(follow_redirects=True, timeout=120.0) as client:
+                with client.stream("GET", url) as response:
+                    response.raise_for_status()
+                    with open(temp_target, "wb") as f:
+                        for chunk in response.iter_bytes(chunk_size=65536):
+                            f.write(chunk)
+            temp_target.replace(target_path)
+            logger.info("Successfully downloaded model %s to %s", model_name, target_path)
+            return target_path
+        except Exception as e:
+            logger.warning("Failed downloading model from %s: %s", url, e)
+            if temp_target.exists():
+                try:
+                    temp_target.unlink()
+                except OSError:
+                    pass
+    raise RuntimeError(f"Could not download model {model_name} from available sources.")
 
 
 class DocLayoutModel(abc.ABC):
@@ -172,21 +215,10 @@ class OnnxModel(DocLayoutModel):
         models_dir.mkdir(parents=True, exist_ok=True)
         local_path = models_dir / model_name
 
-        if local_path.exists():
-            return OnnxModel(str(local_path))
+        if not local_path.exists():
+            _download_model_file(model_name, local_path)
 
-        cached_path = Path(get_doclayout_onnx_model_path())
-        if cached_path.exists() and cached_path.resolve() != local_path.resolve():
-            try:
-                shutil.copy2(cached_path, local_path)
-                return OnnxModel(str(local_path))
-            except Exception as e:
-                logger.warning(
-                    "Could not copy model to %s: %s. Using source path.", local_path, e
-                )
-                return OnnxModel(str(cached_path))
-
-        return OnnxModel(str(cached_path))
+        return OnnxModel(str(local_path))
 
     @property
     def stride(self) -> int:
@@ -209,19 +241,28 @@ class OnnxModel(DocLayoutModel):
         r = min(new_h / h, new_w / w)
         resized_h, resized_w = int(round(h * r)), int(round(w * r))
 
-        image = cv2.resize(
-            image, (resized_w, resized_h), interpolation=cv2.INTER_LINEAR
-        )
-
         pad_w = (new_w - resized_w) % self.stride
         pad_h = (new_h - resized_h) % self.stride
         top, bottom = pad_h // 2, pad_h - pad_h // 2
         left, right = pad_w // 2, pad_w - pad_w // 2
 
-        image = cv2.copyMakeBorder(
-            image, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(114, 114, 114)
-        )
-        return image
+        if cv2 is not None:
+            image = cv2.resize(
+                image, (resized_w, resized_h), interpolation=cv2.INTER_LINEAR
+            )
+            image = cv2.copyMakeBorder(
+                image, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(114, 114, 114)
+            )
+            return image
+        else:
+            pil_img = Image.fromarray(image)
+            pil_img = pil_img.resize((resized_w, resized_h), Image.Resampling.BILINEAR)
+            resized = np.array(pil_img)
+            target_h = resized_h + top + bottom
+            target_w = resized_w + left + right
+            padded = np.full((target_h, target_w, 3), 114, dtype=image.dtype)
+            padded[top : top + resized_h, left : left + resized_w, :] = resized
+            return padded
 
     def scale_boxes(
         self, img1_shape: tuple, boxes: np.ndarray, img0_shape: tuple
@@ -261,11 +302,19 @@ class ModelInstance:
 
 def load_layout_model(
     model_path: Optional[Union[str, Path]] = None, reload: bool = False
-) -> OnnxModel:
-    """Get or load the singleton DocLayout OnnxModel instance."""
+) -> Optional[OnnxModel]:
+    """Get or load the singleton DocLayout OnnxModel instance, with fallback if not available."""
+    if onnxruntime is None:
+        logger.warning("onnxruntime is not installed. Running in layout fallback mode.")
+        return None
+
     if ModelInstance.value is None or reload:
-        if model_path is not None:
-            ModelInstance.value = OnnxModel(str(model_path))
-        else:
-            ModelInstance.value = OnnxModel.from_pretrained()
+        try:
+            if model_path is not None:
+                ModelInstance.value = OnnxModel(str(model_path))
+            else:
+                ModelInstance.value = OnnxModel.from_pretrained()
+        except Exception as e:
+            logger.warning("Could not load layout model: %s. Continuing in fallback mode.", e)
+            return None
     return ModelInstance.value

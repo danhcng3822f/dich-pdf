@@ -1,7 +1,9 @@
 from pathlib import Path
 import shutil
 import logging
-from babeldoc.assets.assets import get_font_and_metadata
+from typing import List
+import httpx
+
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -50,10 +52,41 @@ def get_font_name_for_lang(lang: str) -> str:
     return CJK_LANG_MAP.get(clean, DEFAULT_FONT_NAME)
 
 
+def _download_font_file(font_name: str, target_path: Path) -> Path:
+    """Download font file directly from public mirrors with fallback."""
+    urls = [
+        f"https://huggingface.co/datasets/awwaawwa/BabelDOC-Assets/resolve/main/fonts/{font_name}?download=true",
+        f"https://hf-mirror.com/datasets/awwaawwa/BabelDOC-Assets/resolve/main/fonts/{font_name}?download=true",
+    ]
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_target = target_path.with_suffix(".tmp")
+    for url in urls:
+        try:
+            logger.info("Downloading font %s from %s...", font_name, url)
+            with httpx.Client(follow_redirects=True, timeout=60.0) as client:
+                with client.stream("GET", url) as response:
+                    response.raise_for_status()
+                    with open(temp_target, "wb") as f:
+                        for chunk in response.iter_bytes(chunk_size=65536):
+                            f.write(chunk)
+            temp_target.replace(target_path)
+            logger.info("Successfully saved font %s to %s", font_name, target_path)
+            return target_path
+        except Exception as e:
+            logger.warning("Failed downloading font from %s: %s", url, e)
+            if temp_target.exists():
+                try:
+                    temp_target.unlink()
+                except OSError:
+                    pass
+
+    raise RuntimeError(f"Could not download font {font_name} from available sources.")
+
+
 def get_font_path(lang: str) -> str:
     """
     Get the absolute file path to a suitable Unicode font for the given language.
-    Downloads the font via babeldoc if not present in settings.fonts_dir,
+    Downloads the font if not present in settings.fonts_dir,
     and caches it locally in settings.fonts_dir.
     """
     font_name = get_font_name_for_lang(lang)
@@ -62,11 +95,8 @@ def get_font_path(lang: str) -> str:
     target_path = fonts_dir / font_name
 
     if not target_path.exists():
-        logger.info("Font %s not found in %s, retrieving via babeldoc...", font_name, fonts_dir)
-        cached_path, _ = get_font_and_metadata(font_name)
-        cached_path = Path(cached_path)
-        if cached_path.resolve() != target_path.resolve():
-            shutil.copy2(cached_path, target_path)
+        logger.info("Font %s not found in %s, retrieving...", font_name, fonts_dir)
+        _download_font_file(font_name, target_path)
 
     if not target_path.exists():
         raise FileNotFoundError(f"Font file could not be located or downloaded: {font_name}")
