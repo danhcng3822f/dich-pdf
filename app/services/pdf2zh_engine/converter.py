@@ -66,7 +66,7 @@ class PDFConverterEx(PDFConverter):
         x0, y0 = apply_matrix_pt(ctm, (x0, y0))
         x1, y1 = apply_matrix_pt(ctm, (x1, y1))
         mediabox = (0, 0, abs(x0 - x1), abs(y0 - y1))
-        self.cur_item = LTPage(page.pageno, mediabox)
+        self.cur_item = LTPage(getattr(page, "pageno", 0), mediabox)
 
     def end_page(self, page: Any) -> Any:
         return self.receive_layout(self.cur_item)
@@ -770,7 +770,7 @@ def patch_page(
         obj_patch: Dict[Any, str] = {}
         interpreter = PDFPageInterpreterEx(converter.rsrcmgr, converter, obj_patch)
         interpreter.process_page(target_miner_page)
-        return obj_patch.get(getattr(target_miner_page, "page_xref", target_miner_page.pageno), "")
+        return obj_patch.get(getattr(target_miner_page, "page_xref", page_no), "")
 
     # PDFMiner PDFPage
     if hasattr(page, "cropbox"):
@@ -782,6 +782,6 @@ def patch_page(
         obj_patch = {}
         interpreter = PDFPageInterpreterEx(converter.rsrcmgr, converter, obj_patch)
         interpreter.process_page(page)
-        return obj_patch.get(getattr(page, "page_xref", page.pageno), "")
+        return obj_patch.get(getattr(page, "page_xref", pno), "")
 
     raise TypeError(f"Unsupported page type for patch_page: {type(page)}")

@@ -311,3 +311,35 @@ def test_patch_page_with_model():
     assert "ET" in ops
     assert mock_model.predict.called
     doc_test.close()
+
+
+def test_patch_page_raw_miner_page_without_pageno():
+    doc = pymupdf.open()
+    page = doc.new_page(width=300, height=300)
+    page.insert_text((40, 40), "Raw Miner Test", fontsize=12)
+    doc_bytes = doc.tobytes()
+    doc.close()
+
+    parser = PDFParser(io.BytesIO(doc_bytes))
+    miner_doc = PDFDocument(parser)
+    miner_page = next(MinerPDFPage.create_pages(miner_doc))
+
+    # Verify that raw PDFPage does not have pageno or page_xref attributes
+    assert not hasattr(miner_page, "pageno")
+    assert not hasattr(miner_page, "page_xref")
+
+    rsrcmgr = PDFResourceManager()
+    translator = DummyTranslator(mapping={"Raw Miner Test": "Thử nghiệm Miner Thô"})
+    converter = TranslateConverter(
+        rsrcmgr,
+        translator=translator,
+        noto_name="helv",
+        noto=pymupdf.Font("helv"),
+    )
+
+    # Calling patch_page on raw miner_page should succeed without AttributeError
+    ops = patch_page(miner_page, converter=converter)
+    assert isinstance(ops, str)
+    assert "BT" in ops
+    assert "ET" in ops
+
