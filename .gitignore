@@ -6,4 +6,8 @@ storage/uploads/*.pdf
 storage/exports/*
 !storage/uploads/.gitkeep
 !storage/exports/.gitkeep
+storage/fonts/*
+storage/models/*
+storage/previews/*
+PDFMathTranslate-main/
 .env
