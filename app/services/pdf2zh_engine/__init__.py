@@ -8,6 +8,16 @@ from .doclayout import (
     load_layout_model,
     set_backend,
 )
+from .adapter import (
+    BaseTranslator,
+    GoogleFreeTranslator,
+    BingFreeTranslator,
+    LLMTranslator,
+    PDF2ZHAdapter,
+    create_translator,
+    create_adapter,
+    normalize_tokens,
+)
 
 __all__ = [
     "get_font_path",
@@ -19,4 +29,13 @@ __all__ = [
     "ModelInstance",
     "load_layout_model",
     "set_backend",
+    "BaseTranslator",
+    "GoogleFreeTranslator",
+    "BingFreeTranslator",
+    "LLMTranslator",
+    "PDF2ZHAdapter",
+    "create_translator",
+    "create_adapter",
+    "normalize_tokens",
 ]
+
