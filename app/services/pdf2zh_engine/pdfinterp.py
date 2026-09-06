@@ -65,9 +65,40 @@ class PDFPageInterpreterEx(PDFPageInterpreter):
         self.fontid: Dict[PDFFont, object] = {}
         self.xobjmap: Dict[str, Any] = {}
         self.csmap: Dict[str, PDFColorSpace] = PREDEFINED_COLORSPACE.copy()
+        self._scs: Optional[PDFColorSpace] = None
+        self._ncs: Optional[PDFColorSpace] = None
+
+    @property
+    def scs(self) -> Optional[PDFColorSpace]:
+        """Stroking color space (compatible with both older and newer pdfminer)."""
+        if hasattr(self, "graphicstate") and hasattr(self.graphicstate, "scs"):
+            return self.graphicstate.scs
+        return self._scs
+
+    @scs.setter
+    def scs(self, value: Optional[PDFColorSpace]) -> None:
+        if hasattr(self, "graphicstate"):
+            self.graphicstate.scs = value
+        self._scs = value
+
+    @property
+    def ncs(self) -> Optional[PDFColorSpace]:
+        """Non-stroking color space (compatible with both older and newer pdfminer)."""
+        if hasattr(self, "graphicstate") and hasattr(self.graphicstate, "ncs"):
+            return self.graphicstate.ncs
+        return self._ncs
+
+    @ncs.setter
+    def ncs(self, value: Optional[PDFColorSpace]) -> None:
+        if hasattr(self, "graphicstate"):
+            self.graphicstate.ncs = value
+        self._ncs = value
 
     def dup(self) -> "PDFPageInterpreterEx":
-        return self.__class__(self.rsrcmgr, self.device, self.obj_patch)
+        interp = self.__class__(self.rsrcmgr, self.device, self.obj_patch)
+        interp.scs = self.scs
+        interp.ncs = self.ncs
+        return interp
 
     def init_resources(self, resources: Dict[object, object]) -> None:
         """Prepare the fonts and XObjects listed in the Resource attribute."""
@@ -157,26 +188,28 @@ class PDFPageInterpreterEx(PDFPageInterpreter):
 
     def do_SCN(self) -> Sequence[object]:
         """Set color for stroking operations."""
-        if self.scs:
-            n = self.scs.ncomponents
-        else:
-            if settings.STRICT:
-                raise PDFInterpreterError("No colorspace specified!")
-            n = 1
+        cs = self.scs
+        n = getattr(cs, "ncomponents", 1) if cs else 1
         args = self.pop(n)
-        self.graphicstate.scolor = cast(Color, args)
+        if hasattr(self, "graphicstate"):
+            if hasattr(self, "_parse_color_components") and cs and getattr(cs, "name", "") != "Pattern":
+                color = self._parse_color_components(args, "stroke")
+                self.graphicstate.scolor = color if color is not None else cast(Color, args)
+            else:
+                self.graphicstate.scolor = cast(Color, args)
         return args
 
     def do_scn(self) -> Sequence[object]:
         """Set color for nonstroking operations."""
-        if self.ncs:
-            n = self.ncs.ncomponents
-        else:
-            if settings.STRICT:
-                raise PDFInterpreterError("No colorspace specified!")
-            n = 1
+        cs = self.ncs
+        n = getattr(cs, "ncomponents", 1) if cs else 1
         args = self.pop(n)
-        self.graphicstate.ncolor = cast(Color, args)
+        if hasattr(self, "graphicstate"):
+            if hasattr(self, "_parse_color_components") and cs and getattr(cs, "name", "") != "Pattern":
+                color = self._parse_color_components(args, "non-stroke")
+                self.graphicstate.ncolor = color if color is not None else cast(Color, args)
+            else:
+                self.graphicstate.ncolor = cast(Color, args)
         return args
 
     def do_SC(self) -> Sequence[object]:
@@ -214,8 +247,10 @@ class PDFPageInterpreterEx(PDFPageInterpreter):
                 [xobj],
                 ctm=ctm,
             )
-            self.ncs = interpreter.ncs
-            self.scs = interpreter.scs
+            if hasattr(interpreter, "ncs"):
+                self.ncs = interpreter.ncs
+            if hasattr(interpreter, "scs"):
+                self.scs = interpreter.scs
             try:
                 self.device.fontid = interpreter.fontid
                 self.device.fontmap = interpreter.fontmap

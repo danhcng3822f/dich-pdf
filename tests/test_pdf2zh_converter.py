@@ -343,3 +343,39 @@ def test_patch_page_raw_miner_page_without_pageno():
     assert "BT" in ops
     assert "ET" in ops
 
+
+def test_pdfinterp_colorspace_and_scn_sc_operators():
+    from pdfminer.pdfcolor import PREDEFINED_COLORSPACE
+    from pdfminer.pdfdevice import PDFDevice
+    rsrcmgr = PDFResourceManager()
+    dev = PDFDevice(rsrcmgr)
+    interp = PDFPageInterpreterEx(rsrcmgr, dev, {})
+    interp.init_state((1, 0, 0, 1, 0, 0))
+
+    # Test default colorspaces
+    assert interp.scs is not None
+    assert interp.ncs is not None
+
+    # Test setting ncs and scs via property
+    interp.graphicstate.ncs = PREDEFINED_COLORSPACE["DeviceRGB"]
+    assert interp.ncs == PREDEFINED_COLORSPACE["DeviceRGB"]
+    interp.push(0.1)
+    interp.push(0.2)
+    interp.push(0.3)
+    res_scn = interp.do_scn()
+    assert res_scn is not None
+
+    interp.graphicstate.scs = PREDEFINED_COLORSPACE["DeviceRGB"]
+    assert interp.scs == PREDEFINED_COLORSPACE["DeviceRGB"]
+    interp.push(0.4)
+    interp.push(0.5)
+    interp.push(0.6)
+    res_sc = interp.do_sc()
+    assert res_sc is not None
+
+    # Test dup preserves scs and ncs
+    child = interp.dup()
+    assert child.scs == interp.scs
+    assert child.ncs == interp.ncs
+
+
