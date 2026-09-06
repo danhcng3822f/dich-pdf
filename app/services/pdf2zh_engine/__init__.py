@@ -26,6 +26,11 @@ from .converter import (
     TranslateConverter,
     patch_page,
 )
+from .pipeline import (
+    render_pixmap_base64,
+    create_dual_pdf,
+    process_pdf2zh_stream,
+)
 
 __all__ = [
     "get_font_path",
@@ -51,4 +56,7 @@ __all__ = [
     "OpType",
     "TranslateConverter",
     "patch_page",
+    "render_pixmap_base64",
+    "create_dual_pdf",
+    "process_pdf2zh_stream",
 ]

@@ -147,6 +147,7 @@ class TranslateConverter(PDFConverterEx):
         self.envs = envs or {}
         self.prompt = prompt
         self.ignore_cache = ignore_cache
+        self.last_page_text: str = ""
 
         if translator is not None:
             self.translator = translator
@@ -443,6 +444,7 @@ class TranslateConverter(PDFConverterEx):
         max_workers = self.thread if (self.thread is not None and self.thread > 0) else None
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             news = list(executor.map(worker, sstk))
+        self.last_page_text = "\n\n".join(news)
 
         # C. Typesetting
         def raw_string(fcur: Optional[str], cstk: str) -> str:
