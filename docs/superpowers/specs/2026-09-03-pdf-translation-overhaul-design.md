@@ -109,7 +109,9 @@ upload PDF
 
 - Mở document **một lần** cho cả job, không mở lại từng trang (hiện tại `extract_page_content` mở/đóng file cho mỗi trang).
 - Lấy text theo **block** (`page.get_text("blocks")`) rồi sắp theo thứ tự đọc, thay cho `get_text("text")` — slide chia cột hiện đang bị trộn lẫn hai cột thành một dòng.
-- Ảnh preview **không nhúng base64 vào SSE**. Ghi ra `storage/previews/<job_id>/<page>.webp`, SSE trả `image_url`. Lý do: base64 làm phình stream 33%, và bản cũ giữ toàn bộ ảnh trong `JOB_STORE` vĩnh viễn.
+- Ảnh preview **không nhúng base64 vào SSE**. Ghi ra `storage/previews/<job_id>/<page>.png`, SSE trả `image_url`. Lý do: base64 làm phình stream 33%, và bản cũ giữ toàn bộ ảnh trong `JOB_STORE` vĩnh viễn.
+
+  Dùng **PNG, không dùng WebP**: đã kiểm tra trên PyMuPDF 1.28.2, `Pixmap.tobytes` chỉ nhận `('png','pnm','pgm','ppm','pbm','pam','tga','tpic','psd','ps','jpg','jpeg')` — WebP raise `ValueError`. Với slide chữ, PNG còn nhỏ hơn JPEG (5,0 KB so với 9,6 KB ở cùng mức zoom).
 - `parse_page_ranges` với input không hợp lệ phải **raise lỗi**, không được trả về toàn bộ trang. Hành vi hiện tại khiến gõ nhầm `999` trên file 40 trang thành dịch cả 40 trang.
 
 ### 5.2 Translation engine
@@ -209,7 +211,7 @@ POST /api/upload            → {file_id, filename, total_pages, file_size}
 POST /api/estimate          → {pages, estimated_tokens}
 POST /api/test-connection   → {status, sample_translation}
 POST /api/translate/stream  → SSE
-GET  /api/preview/{job_id}/{page}   → image/webp
+GET  /api/preview/{job_id}/{page}   → image/png
 GET  /api/download/{job_id}/{fmt}   → fmt ∈ {pdf, tex, docx, md}
 ```
 
