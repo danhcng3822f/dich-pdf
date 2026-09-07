@@ -239,3 +239,27 @@ async def test_process_pdf2zh_stream_single_page(tmp_path: Path, sample_pdf: Pat
     assert len(doc_dual) == 2
     doc_dual.close()
 
+
+@pytest.mark.asyncio
+async def test_process_pdf2zh_stream_model_none_fallback(tmp_path: Path, sample_pdf: Path, monkeypatch):
+    monkeypatch.setattr("app.services.pdf2zh_engine.pipeline.load_layout_model", lambda: None)
+    mono_out = tmp_path / "mono_nomodel.pdf"
+    dual_out = tmp_path / "dual_nomodel.pdf"
+    translator = MockPipelineTranslator(lang_in="en", lang_out="vi")
+
+    events = []
+    async for event in process_pdf2zh_stream(
+        file_path=sample_pdf,
+        page_indices=[0],
+        target_lang="vi",
+        translator=translator,
+        mono_out_path=mono_out,
+        dual_out_path=dual_out,
+    ):
+        events.append(event)
+
+    final_event = events[-1]
+    assert final_event["event"] == "completed"
+    assert mono_out.exists()
+
+

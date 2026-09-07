@@ -120,11 +120,17 @@ async def process_pdf2zh_stream(
         # Clone document for translation
         doc_zh = pymupdf.open(stream=doc_orig.tobytes(), filetype="pdf")
 
-        # Embed Tiro and Noto fonts into doc_zh
-        font_path = get_font_path(target_lang)
-        noto_name = "noto"
-        noto_font = pymupdf.Font(noto_name, font_path)
-        font_list = [("tiro", None), (noto_name, font_path)]
+        # Embed Tiro and Noto fonts into doc_zh (with graceful fallback)
+        try:
+            font_path = get_font_path(target_lang)
+            noto_name = "noto"
+            noto_font = pymupdf.Font(noto_name, font_path)
+            font_list = [("tiro", None), (noto_name, font_path)]
+        except Exception as font_err:
+            logger.warning("Could not load font for %s: %s. Using helv fallback.", target_lang, font_err)
+            noto_name = "helv"
+            noto_font = pymupdf.Font("helv")
+            font_list = [("tiro", None), ("helv", None)]
 
         font_id = {}
         for page in doc_zh:
@@ -200,49 +206,50 @@ async def process_pdf2zh_stream(
             # Allow async event loop to breathe
             await asyncio.sleep(0)
 
-            # 3. Predict page layout
+            # 3. Predict page layout (with fallback if model is None)
             page = doc_zh[pno]
             pix = page.get_pixmap()
-            image = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, 3)[:, :, ::-1]
-            imgsz = max(32, int(pix.height / 32) * 32)
-            results = model.predict(image, imgsz=imgsz)
-
             box = np.ones((pix.height, pix.width), dtype=int)
             h, w = box.shape
-            vcls = {"abandon", "figure", "table", "isolate_formula", "formula_caption"}
-            if results:
-                pl = results[0]
-                boxes = getattr(pl, "boxes", [])
-                names = getattr(pl, "names", {})
-                for i, d in enumerate(boxes):
-                    cls_id = int(d.cls)
-                    cls_name = names.get(cls_id, "") if isinstance(names, dict) else (
-                        names[cls_id] if cls_id < len(names) else ""
-                    )
-                    if cls_name not in vcls:
-                        x0, y0, x1, y1 = np.squeeze(d.xyxy)
-                        x0, y0, x1, y1 = (
-                            np.clip(int(x0 - 1), 0, w - 1),
-                            np.clip(int(h - y1 - 1), 0, h - 1),
-                            np.clip(int(x1 + 1), 0, w - 1),
-                            np.clip(int(h - y0 + 1), 0, h - 1),
-                        )
-                        box[y0:y1, x0:x1] = i + 2
 
-                for i, d in enumerate(boxes):
-                    cls_id = int(d.cls)
-                    cls_name = names.get(cls_id, "") if isinstance(names, dict) else (
-                        names[cls_id] if cls_id < len(names) else ""
-                    )
-                    if cls_name in vcls:
-                        x0, y0, x1, y1 = np.squeeze(d.xyxy)
-                        x0, y0, x1, y1 = (
-                            np.clip(int(x0 - 1), 0, w - 1),
-                            np.clip(int(h - y1 - 1), 0, h - 1),
-                            np.clip(int(x1 + 1), 0, w - 1),
-                            np.clip(int(h - y0 + 1), 0, h - 1),
+            if model is not None:
+                image = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, 3)[:, :, ::-1]
+                imgsz = max(32, int(pix.height / 32) * 32)
+                results = model.predict(image, imgsz=imgsz)
+                vcls = {"abandon", "figure", "table", "isolate_formula", "formula_caption"}
+                if results:
+                    pl = results[0]
+                    boxes = getattr(pl, "boxes", [])
+                    names = getattr(pl, "names", {})
+                    for i, d in enumerate(boxes):
+                        cls_id = int(d.cls)
+                        cls_name = names.get(cls_id, "") if isinstance(names, dict) else (
+                            names[cls_id] if cls_id < len(names) else ""
                         )
-                        box[y0:y1, x0:x1] = 0
+                        if cls_name not in vcls:
+                            x0, y0, x1, y1 = np.squeeze(d.xyxy)
+                            x0, y0, x1, y1 = (
+                                np.clip(int(x0 - 1), 0, w - 1),
+                                np.clip(int(h - y1 - 1), 0, h - 1),
+                                np.clip(int(x1 + 1), 0, w - 1),
+                                np.clip(int(h - y0 + 1), 0, h - 1),
+                            )
+                            box[y0:y1, x0:x1] = i + 2
+
+                    for i, d in enumerate(boxes):
+                        cls_id = int(d.cls)
+                        cls_name = names.get(cls_id, "") if isinstance(names, dict) else (
+                            names[cls_id] if cls_id < len(names) else ""
+                        )
+                        if cls_name in vcls:
+                            x0, y0, x1, y1 = np.squeeze(d.xyxy)
+                            x0, y0, x1, y1 = (
+                                np.clip(int(x0 - 1), 0, w - 1),
+                                np.clip(int(h - y1 - 1), 0, h - 1),
+                                np.clip(int(x1 + 1), 0, w - 1),
+                                np.clip(int(h - y0 + 1), 0, h - 1),
+                            )
+                            box[y0:y1, x0:x1] = 0
 
             converter.layout[pno] = box
 
