@@ -234,9 +234,20 @@ async def test_process_pdf2zh_stream_single_page(tmp_path: Path, sample_pdf: Pat
     assert final_event["event"] == "completed"
     assert final_event["total_pages"] == 1
 
+    assert mono_out.exists()
+    doc_mono = pymupdf.open(str(mono_out))
+    assert len(doc_mono) == 1
+    mono_text = doc_mono[0].get_text()
+    assert "Chapter 2" in mono_text
+    assert "Chapter 1" not in mono_text
+    doc_mono.close()
+
     assert dual_out.exists()
     doc_dual = pymupdf.open(str(dual_out))
     assert len(doc_dual) == 2
+    assert "Chapter 2" in doc_dual[0].get_text()
+    assert "Chapter 1" not in doc_dual[0].get_text()
+    assert "Chapter 2" in doc_dual[1].get_text()
     doc_dual.close()
 
 
@@ -261,5 +272,4 @@ async def test_process_pdf2zh_stream_model_none_fallback(tmp_path: Path, sample_
     final_event = events[-1]
     assert final_event["event"] == "completed"
     assert mono_out.exists()
-
 

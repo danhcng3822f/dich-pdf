@@ -207,12 +207,18 @@
             
             <!-- Controls & Export Toolbar -->
             <div class="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-wrap items-center justify-between gap-4">
-                <div class="flex items-center space-x-3">
-                    <label class="text-xs font-semibold text-slate-600">Chế độ hiển thị:</label>
-                    <select id="view-mode-select" class="bg-slate-50 border border-slate-300 rounded-xl px-3 py-1.5 text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500">
-                        <option value="split" selected>📖 Song ngữ (Gốc & Dịch)</option>
-                        <option value="full">📄 Chỉ xem bản dịch</option>
-                    </select>
+                <div class="flex items-center gap-3 flex-wrap">
+                    <div id="job-history-control" class="hidden items-center gap-2">
+                        <label for="job-history-select" class="text-xs font-semibold text-slate-600">Kết quả:</label>
+                        <select id="job-history-select" class="max-w-[260px] bg-blue-50 border border-blue-200 rounded-xl px-3 py-1.5 text-xs font-semibold text-blue-800 focus:outline-none focus:ring-2 focus:ring-blue-500" title="Các bản dịch được giữ trong tab trình duyệt này"></select>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <label for="view-mode-select" class="text-xs font-semibold text-slate-600">Hiển thị:</label>
+                        <select id="view-mode-select" class="bg-slate-50 border border-slate-300 rounded-xl px-3 py-1.5 text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            <option value="split" selected>📖 Song ngữ (Gốc & Dịch)</option>
+                            <option value="full">📄 Chỉ xem bản dịch</option>
+                        </select>
+                    </div>
                 </div>
 
                 <!-- Export Buttons -->

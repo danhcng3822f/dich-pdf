@@ -6,8 +6,12 @@ document.addEventListener("DOMContentLoaded", () => {
     let currentConfig = window.API.getConfig();
     let currentUploadedFile = null; // { file_id, filename, total_pages, file_size }
     let isTranslating = false;
-    let pagesData = []; // list of { page_number, original_text, translated_text, image_base64, original_image, translated_image }
     let activeJobId = null;
+    let streamingJobId = null;
+    let displayedJobId = null;
+    let pendingJobContext = null;
+    const jobHistory = new Map();
+    const MAX_JOB_HISTORY = 5;
     let currentEngineMode = "pdf2zh_layout"; // "pdf2zh_layout" | "beamer_slide"
 
     // DOM Elements - Settings Modal
@@ -57,6 +61,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const resultsSection = document.getElementById("results-section");
     const pagesContainer = document.getElementById("pages-container");
     const viewModeSelect = document.getElementById("view-mode-select");
+    const jobHistoryControl = document.getElementById("job-history-control");
+    const jobHistorySelect = document.getElementById("job-history-select");
 
     // Download buttons
     const downloadDocxBtn = document.getElementById("download-docx-btn");
@@ -221,12 +227,8 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
         // Adjust download buttons visibility according to mode
-        if (downloadTexBtn) {
-            downloadTexBtn.classList.toggle("hidden", isPdf2zh);
-        }
-        if (downloadDualBtn) {
-            downloadDualBtn.classList.toggle("hidden", !isPdf2zh);
-        }
+        const displayedJob = jobHistory.get(displayedJobId);
+        syncDownloadVisibility(displayedJob?.engineMode || mode);
     }
 
     if (enginePdf2zhBtn) {
@@ -268,10 +270,19 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
         }
 
+        const runtimeConfig = await window.API.getRuntimeConfig();
+        const maxUploadSizeMb = runtimeConfig.max_upload_size_mb || 50;
+        if (file.size > maxUploadSizeMb * 1024 * 1024) {
+            showToast(`File vượt quá giới hạn ${maxUploadSizeMb} MB của máy chủ hiện tại`, "error");
+            return;
+        }
+
         dropZone.classList.add("opacity-50", "pointer-events-none");
         try {
             const res = await window.API.uploadPdf(file);
-            currentUploadedFile = res;
+            // Keep the browser File so translation can use one self-contained
+            // request instead of relying on a previous serverless /tmp file.
+            currentUploadedFile = { ...res, file };
             fileNameSpan.textContent = res.filename;
             fileMetaSpan.textContent = `${res.total_pages} trang • ${(res.file_size / (1024 * 1024)).toFixed(2)} MB`;
 
@@ -288,6 +299,9 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     removeFileBtn.addEventListener("click", () => {
+        if (currentUploadedFile?.file_id) {
+            window.API.deleteUpload(currentUploadedFile.file_id);
+        }
         currentUploadedFile = null;
         fileInfoCard.classList.add("hidden");
         dropZone.classList.remove("hidden");
@@ -310,13 +324,15 @@ document.addEventListener("DOMContentLoaded", () => {
 
         // Reset UI for new run
         isTranslating = true;
-        pagesData = [];
         activeJobId = null;
+        streamingJobId = null;
+        displayedJobId = null;
         pagesContainer.innerHTML = "";
         resultsSection.classList.remove("hidden");
         progressSection.classList.remove("hidden");
         setDownloadButtonsEnabled(false);
         startTranslateBtn.disabled = true;
+        if (jobHistorySelect) jobHistorySelect.disabled = true;
 
         updateProgress(0, "Đang khởi tạo tiến trình dịch...");
 
@@ -329,13 +345,32 @@ document.addEventListener("DOMContentLoaded", () => {
             engine_mode: currentEngineMode,
             ai_config: currentConfig
         };
+        pendingJobContext = {
+            filename: currentUploadedFile.filename,
+            engineMode: currentEngineMode,
+            targetLangText: targetLangSelect.options[targetLangSelect.selectedIndex]
+                ? targetLangSelect.options[targetLangSelect.selectedIndex].text
+                : targetLangSelect.value,
+            startedAt: new Date()
+        };
 
         try {
-            const response = await fetch("/api/translate/stream", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(payload)
-            });
+            let response;
+            if (currentUploadedFile.file instanceof File) {
+                const formData = new FormData();
+                formData.append("request_json", JSON.stringify(payload));
+                formData.append("file", currentUploadedFile.file, currentUploadedFile.filename);
+                response = await fetch("/api/translate/file-stream", {
+                    method: "POST",
+                    body: formData
+                });
+            } else {
+                response = await fetch("/api/translate/stream", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload)
+                });
+            }
 
             if (!response.ok) {
                 const errData = await response.json().catch(() => ({ detail: response.statusText }));
@@ -345,77 +380,282 @@ document.addEventListener("DOMContentLoaded", () => {
             const reader = response.body.getReader();
             const decoder = new TextDecoder("utf-8");
             let buffer = "";
+            let receivedTerminalEvent = false;
 
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
 
                 buffer += decoder.decode(value, { stream: true });
+                buffer = buffer.replace(/\r\n/g, "\n");
                 const parts = buffer.split("\n\n");
                 buffer = parts.pop(); // Keep last partial chunk in buffer
 
                 for (const part of parts) {
                     if (!part.trim()) continue;
-                    parseSSEEvent(part);
+                    if (parseSSEEvent(part) === "completed") receivedTerminalEvent = true;
                 }
+            }
+
+            buffer += decoder.decode();
+            if (buffer.trim() && parseSSEEvent(buffer) === "completed") {
+                receivedTerminalEvent = true;
+            }
+            if (!receivedTerminalEvent) {
+                throw new Error("Kết nối kết thúc trước khi file được tạo xong");
             }
         } catch (err) {
             showToast(`Lỗi trong quá trình dịch: ${err.message}`, "error");
             updateProgress(0, `Đã dừng do lỗi: ${err.message}`);
+            const interruptedJob = jobHistory.get(streamingJobId);
+            if (interruptedJob && !interruptedJob.completedData) {
+                interruptedJob.completedData = { error: err.message };
+                interruptedJob.exportBuffers.clear();
+                updateJobOption(interruptedJob);
+                updateDownloadButtonsForJob(interruptedJob);
+            }
+            if (!streamingJobId && jobHistory.size > 0) {
+                selectJob(Array.from(jobHistory.keys()).at(-1));
+            }
         } finally {
             isTranslating = false;
             startTranslateBtn.disabled = false;
+            if (jobHistorySelect) jobHistorySelect.disabled = false;
         }
     });
 
     function parseSSEEvent(eventBlock) {
         const lines = eventBlock.split("\n");
         let eventType = "message";
-        let dataStr = "";
+        const dataLines = [];
 
         for (const line of lines) {
             if (line.startsWith("event:")) {
                 eventType = line.replace("event:", "").trim();
             } else if (line.startsWith("data:")) {
-                dataStr = line.replace("data:", "").trim();
+                dataLines.push(line.replace("data:", "").trimStart());
             }
         }
 
+        const dataStr = dataLines.join("\n");
         if (!dataStr) return;
         try {
             const data = JSON.parse(dataStr);
             handleSSEAction(eventType, data);
+            return eventType;
         } catch (e) {
             console.error("Failed to parse SSE JSON:", e, dataStr);
+            return null;
         }
     }
 
     function handleSSEAction(type, data) {
         if (type === "start") {
+            streamingJobId = data.job_id;
             activeJobId = data.job_id;
+            displayedJobId = data.job_id;
+            progressBar.dataset.total = String(data.total_pages || 0);
+            const context = pendingJobContext || {};
+            const job = {
+                id: data.job_id,
+                filename: context.filename || "document.pdf",
+                engineMode: data.engine_mode || context.engineMode || currentEngineMode,
+                targetLangText: context.targetLangText || targetLangSelect.value,
+                startedAt: context.startedAt || new Date(),
+                selectedPages: data.pages || [],
+                pages: [],
+                previewUrls: new Set(),
+                exportBuffers: new Map(),
+                artifacts: new Map(),
+                completedData: null
+            };
+            addJob(job);
+            syncDownloadVisibility(job.engineMode);
             updateProgress(5, `Bắt đầu dịch ${data.total_pages} trang được chọn...`);
         } else if (type === "page_progress") {
             const percent = Math.round(((data.current_index - 0.5) / data.total_pages) * 90);
             updateProgress(percent, `Đang xử lý trang ${data.page_number} (${data.current_index}/${data.total_pages})...`);
         } else if (type === "page_completed") {
-            pagesData.push(data);
-            renderPageCard(data);
-            const total = parseInt(progressBar.dataset.total || pagesData.length);
-            const percent = Math.round((pagesData.length / total) * 90);
+            const job = jobHistory.get(streamingJobId);
+            if (!job) return;
+            const pageData = materializePreviewImages(data, job);
+            job.pages.push(pageData);
+            if (displayedJobId === job.id) renderPageCard(pageData, job);
+            const total = parseInt(progressBar.dataset.total || job.pages.length, 10);
+            const percent = Math.round((job.pages.length / total) * 90);
             updateProgress(percent, `Đã hoàn tất trang ${data.page_number}`);
         } else if (type === "page_error") {
             showToast(`Lỗi tại trang ${data.page_number}: ${data.error}`, "error");
+        } else if (type === "export_start") {
+            startInlineArtifact(data);
+        } else if (type === "export_chunk") {
+            appendInlineArtifactChunk(data);
+        } else if (type === "export_ready") {
+            finishInlineArtifact(data);
         } else if (type === "completed") {
+            const job = jobHistory.get(data.job_id || streamingJobId);
             if (data.error) {
                 updateProgress(0, `Dừng: ${data.error}`);
                 showToast(`Lỗi phiên dịch: ${data.error}`, "error");
+                if (job) {
+                    job.completedData = data;
+                    updateJobOption(job);
+                }
                 return;
             }
             updateProgress(100, "Hoàn tất dịch toàn bộ tài liệu!");
             activeJobId = data.job_id;
-            updateDownloadButtons(data);
+            if (job) {
+                job.completedData = data;
+                updateJobOption(job);
+                if (displayedJobId === job.id) updateDownloadButtonsForJob(job);
+            } else {
+                updateDownloadButtons(data);
+            }
             showToast("Tất cả trang đã dịch xong! Bạn có thể tải file kết quả bên dưới.", "success");
         }
+    }
+
+    function addJob(job) {
+        jobHistory.set(job.id, job);
+        if (jobHistorySelect) {
+            const option = document.createElement("option");
+            option.value = job.id;
+            option.textContent = jobLabel(job);
+            jobHistorySelect.appendChild(option);
+            jobHistorySelect.value = job.id;
+            jobHistoryControl.classList.remove("hidden");
+            jobHistoryControl.classList.add("flex");
+        }
+
+        while (jobHistory.size > MAX_JOB_HISTORY) {
+            const oldestId = jobHistory.keys().next().value;
+            const oldestJob = jobHistory.get(oldestId);
+            if (oldestJob) revokeJobArtifacts(oldestJob);
+            jobHistory.delete(oldestId);
+            jobHistorySelect?.querySelector(`option[value="${CSS.escape(oldestId)}"]`)?.remove();
+        }
+    }
+
+    function jobLabel(job) {
+        const time = job.startedAt instanceof Date
+            ? job.startedAt.toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })
+            : "";
+        const count = job.selectedPages.length || job.pages.length;
+        const pageSummary = job.selectedPages.length > 0 && job.selectedPages.length <= 4
+            ? `trang ${job.selectedPages.join(", ")}`
+            : `${count} trang`;
+        const state = job.completedData ? (job.completedData.error ? "✕" : "✓") : "…";
+        return `${state} ${job.filename} • ${pageSummary}${time ? ` • ${time}` : ""}`;
+    }
+
+    function updateJobOption(job) {
+        if (!jobHistorySelect) return;
+        const option = Array.from(jobHistorySelect.options).find(item => item.value === job.id);
+        if (option) option.textContent = jobLabel(job);
+    }
+
+    function selectJob(jobId) {
+        const job = jobHistory.get(jobId);
+        if (!job) return;
+
+        displayedJobId = job.id;
+        activeJobId = job.id;
+        pagesContainer.innerHTML = "";
+        job.pages.forEach(page => renderPageCard(page, job));
+        if (jobHistorySelect) jobHistorySelect.value = job.id;
+        syncDownloadVisibility(job.engineMode);
+        updateDownloadButtonsForJob(job);
+
+        if (!isTranslating && job.completedData) {
+            if (job.completedData.error) {
+                updateProgress(0, `Kết quả lỗi: ${job.completedData.error}`);
+            } else {
+                updateProgress(100, `Kết quả ${job.filename} (${job.pages.length} trang)`);
+            }
+        }
+    }
+
+    function startInlineArtifact(data) {
+        const job = jobHistory.get(data.job_id || streamingJobId);
+        if (!job) return;
+        if (displayedJobId === job.id) {
+            updateProgress(95, `Đang chuẩn bị file ${data.filename || data.format}...`);
+        }
+        job.exportBuffers.set(data.format, {
+            chunks: new Array(data.total_chunks || 0),
+            filename: data.filename,
+            mimeType: data.mime_type || "application/octet-stream",
+            size: data.size || 0
+        });
+    }
+
+    function appendInlineArtifactChunk(data) {
+        const job = jobHistory.get(data.job_id || streamingJobId);
+        const pending = job?.exportBuffers.get(data.format);
+        if (!pending || data.index < 0 || data.index >= pending.chunks.length) return;
+        pending.chunks[data.index] = data.content;
+    }
+
+    function finishInlineArtifact(data) {
+        const job = jobHistory.get(data.job_id || streamingJobId);
+        const pending = job?.exportBuffers.get(data.format);
+        if (!job || !pending || pending.chunks.some(chunk => typeof chunk !== "string")) {
+            showToast(`Không nhận đủ dữ liệu file ${data.filename || data.format}`, "error");
+            return;
+        }
+
+        try {
+            const byteParts = pending.chunks.map(decodeBase64Chunk);
+            const blob = new Blob(byteParts, { type: pending.mimeType });
+            if (pending.size && blob.size !== pending.size) {
+                throw new Error(`kích thước ${blob.size}/${pending.size} byte`);
+            }
+            const url = URL.createObjectURL(blob);
+            job.artifacts.set(data.format, {
+                blob,
+                url,
+                filename: pending.filename || data.filename,
+                mimeType: pending.mimeType
+            });
+            job.exportBuffers.delete(data.format);
+            if (displayedJobId === job.id) updateDownloadButtonsForJob(job);
+        } catch (error) {
+            showToast(`Không thể ghép file ${data.filename || data.format}: ${error.message}`, "error");
+        }
+    }
+
+    function decodeBase64Chunk(encoded) {
+        const binary = atob(encoded);
+        const bytes = new Uint8Array(binary.length);
+        for (let index = 0; index < binary.length; index += 1) {
+            bytes[index] = binary.charCodeAt(index);
+        }
+        return bytes;
+    }
+
+    function revokeJobArtifacts(job) {
+        job.artifacts.forEach(artifact => URL.revokeObjectURL(artifact.url));
+        job.previewUrls.forEach(url => URL.revokeObjectURL(url));
+    }
+
+    function materializePreviewImages(page, job) {
+        const result = { ...page };
+        for (const key of ["original_image", "translated_image", "image_base64"]) {
+            const dataUrl = result[key];
+            if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:image/")) continue;
+            try {
+                const separator = dataUrl.indexOf(",");
+                const mimeType = dataUrl.slice(5, dataUrl.indexOf(";", 5));
+                const bytes = decodeBase64Chunk(dataUrl.slice(separator + 1));
+                const url = URL.createObjectURL(new Blob([bytes], { type: mimeType }));
+                job.previewUrls.add(url);
+                result[key] = url;
+            } catch (error) {
+                console.warn("Không thể tối ưu ảnh xem trước:", error);
+            }
+        }
+        return result;
     }
 
     function updateProgress(percent, text) {
@@ -424,7 +664,7 @@ document.addEventListener("DOMContentLoaded", () => {
         progressText.textContent = text;
     }
 
-    function renderPageCard(page) {
+    function renderPageCard(page, job = jobHistory.get(displayedJobId)) {
         const card = document.createElement("div");
         card.className = "bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden mb-6 transition-all hover:shadow-md";
         card.id = `page-card-${page.page_number}`;
@@ -432,9 +672,11 @@ document.addEventListener("DOMContentLoaded", () => {
         const isSplit = viewModeSelect.value === "split";
         const origImg = page.original_image || page.image_base64 || "";
         const isPdf2zh = Boolean(page.translated_image);
-        const targetLangText = targetLangSelect.options[targetLangSelect.selectedIndex]
-            ? targetLangSelect.options[targetLangSelect.selectedIndex].text
-            : targetLangSelect.value;
+        const targetLangText = job?.targetLangText || (
+            targetLangSelect.options[targetLangSelect.selectedIndex]
+                ? targetLangSelect.options[targetLangSelect.selectedIndex].text
+                : targetLangSelect.value
+        );
 
         if (isPdf2zh) {
             // PDF2ZH Layout Mode: Side-by-side pixel-accurate image comparison
@@ -581,6 +823,17 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     });
 
+    if (jobHistorySelect) {
+        jobHistorySelect.addEventListener("change", () => selectJob(jobHistorySelect.value));
+    }
+
+    window.addEventListener("beforeunload", () => {
+        jobHistory.forEach(revokeJobArtifacts);
+        if (currentUploadedFile?.file_id) {
+            window.API.deleteUpload(currentUploadedFile.file_id);
+        }
+    });
+
     // --- Export Downloads ---
     function setButtonEnabled(btn, enabled) {
         if (!btn) return;
@@ -608,10 +861,34 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
+    function syncDownloadVisibility(engineMode) {
+        const isPdf2zh = engineMode === "pdf2zh_layout";
+        if (downloadTexBtn) downloadTexBtn.classList.toggle("hidden", isPdf2zh);
+        if (downloadDualBtn) downloadDualBtn.classList.toggle("hidden", !isPdf2zh);
+    }
+
+    function updateDownloadButtonsForJob(job) {
+        if (!job) {
+            setDownloadButtonsEnabled(false);
+            return;
+        }
+        const completed = job.completedData || {};
+        updateDownloadButtons({
+            docx_ready: job.artifacts.has("docx") || completed.docx_ready,
+            mono_ready: job.artifacts.has("mono_pdf") || completed.mono_ready,
+            dual_ready: job.artifacts.has("dual_pdf") || completed.dual_ready,
+            pdf_ready: job.artifacts.has("pdf") || completed.pdf_ready,
+            md_ready: job.artifacts.has("md") || completed.md_ready,
+            tex_ready: job.artifacts.has("tex") || completed.tex_ready
+        });
+    }
+
     if (downloadDocxBtn) downloadDocxBtn.addEventListener("click", () => triggerDownload("docx"));
     if (downloadPdfBtn) {
         downloadPdfBtn.addEventListener("click", () => {
-            const fmt = currentEngineMode === "pdf2zh_layout" ? "mono_pdf" : "pdf";
+            const job = jobHistory.get(displayedJobId);
+            const engineMode = job?.engineMode || currentEngineMode;
+            const fmt = engineMode === "pdf2zh_layout" ? "mono_pdf" : "pdf";
             triggerDownload(fmt);
         });
     }
@@ -619,12 +896,63 @@ document.addEventListener("DOMContentLoaded", () => {
     if (downloadMdBtn) downloadMdBtn.addEventListener("click", () => triggerDownload("md"));
     if (downloadTexBtn) downloadTexBtn.addEventListener("click", () => triggerDownload("tex"));
 
-    function triggerDownload(fmt) {
-        if (!activeJobId) {
+    async function triggerDownload(fmt) {
+        const job = jobHistory.get(displayedJobId || activeJobId);
+        if (!job || !activeJobId) {
             showToast("Chưa có tài liệu hoàn chỉnh để tải về", "warning");
             return;
         }
-        window.location.href = `/api/download/${activeJobId}/${fmt}`;
+
+        const inlineArtifact = job.artifacts.get(fmt);
+        if (inlineArtifact) {
+            downloadBlobArtifact(inlineArtifact);
+            return;
+        }
+
+        // Backward-compatible fallback for local/persistent deployments. Fetch
+        // first so a JSON 404 can never be saved with a misleading .pdf name.
+        try {
+            const response = await fetch(`/api/download/${job.id}/${fmt}`);
+            if (!response.ok) {
+                const body = await response.json().catch(() => ({}));
+                throw new Error(body.detail || `HTTP ${response.status}`);
+            }
+
+            const blob = await response.blob();
+            const isPdf = fmt === "pdf" || fmt.endsWith("_pdf");
+            if (isPdf) {
+                const signature = new TextDecoder("ascii").decode(
+                    await blob.slice(0, 5).arrayBuffer()
+                );
+                if (signature !== "%PDF-") {
+                    throw new Error("máy chủ trả về dữ liệu không phải PDF");
+                }
+            }
+
+            const disposition = response.headers.get("content-disposition") || "";
+            const filenameMatch = disposition.match(/filename\*?=(?:UTF-8'')?["']?([^"';]+)/i);
+            const fallbackName = `${job.filename.replace(/\.pdf$/i, "")}_translated.${fmt === "mono_pdf" || fmt === "dual_pdf" ? "pdf" : fmt}`;
+            const artifact = {
+                blob,
+                url: URL.createObjectURL(blob),
+                filename: filenameMatch ? decodeURIComponent(filenameMatch[1]) : fallbackName,
+                mimeType: blob.type
+            };
+            job.artifacts.set(fmt, artifact);
+            downloadBlobArtifact(artifact);
+        } catch (error) {
+            showToast(`Không thể tải file: ${error.message}. Hãy dịch lại để tạo file mới.`, "error");
+        }
+    }
+
+    function downloadBlobArtifact(artifact) {
+        const link = document.createElement("a");
+        link.href = artifact.url;
+        link.download = artifact.filename || "translated-document";
+        link.style.display = "none";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
     }
 
     // Helper: Toast Notifications

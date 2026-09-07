@@ -3,8 +3,9 @@ from pathlib import Path
 from pydantic_settings import BaseSettings
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+IS_VERCEL = bool(os.environ.get("VERCEL"))
 
-if os.environ.get("VERCEL"):
+if IS_VERCEL:
     STORAGE_DIR = Path("/tmp/storage")
 else:
     STORAGE_DIR = BASE_DIR / "storage"
@@ -28,6 +29,8 @@ class Settings(BaseSettings):
     fonts_dir: Path = FONTS_DIR
     models_dir: Path = MODELS_DIR
     previews_dir: Path = PREVIEWS_DIR
-    max_upload_size_mb: int = 50
+    # Vercel Functions reject request bodies above 4.5 MB before FastAPI can
+    # read them. Keep some room for multipart boundaries in production.
+    max_upload_size_mb: int = 4 if IS_VERCEL else 50
 
 settings = Settings()

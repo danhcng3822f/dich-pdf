@@ -23,6 +23,8 @@ const DEFAULT_MODELS = {
 };
 
 const API = {
+    runtimeConfigPromise: null,
+
     isFreeProvider(provider) {
         const p = (provider || "").toLowerCase();
         return p === "google" || p === "bing" || p === "google_free" || p === "bing_free";
@@ -46,6 +48,18 @@ const API = {
 
     saveConfig(config) {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+    },
+
+    getRuntimeConfig() {
+        if (!this.runtimeConfigPromise) {
+            this.runtimeConfigPromise = fetch("/api/runtime-config")
+                .then(res => {
+                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                    return res.json();
+                })
+                .catch(() => ({ max_upload_size_mb: 50 }));
+        }
+        return this.runtimeConfigPromise;
     },
 
     async testConnection(config) {
@@ -74,6 +88,14 @@ const API = {
             throw new Error(err.detail || "Upload PDF thất bại");
         }
         return await res.json();
+    },
+
+    async deleteUpload(fileId) {
+        if (!fileId) return;
+        await fetch(`/api/upload/${encodeURIComponent(fileId)}`, {
+            method: "DELETE",
+            keepalive: true
+        }).catch(() => {});
     }
 };
 

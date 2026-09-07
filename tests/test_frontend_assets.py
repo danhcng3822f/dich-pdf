@@ -36,6 +36,7 @@ def test_index_page_returns_html():
     assert 'id="download-dual-btn"' in html
     assert 'id="download-md-btn"' in html
     assert 'id="download-tex-btn"' in html
+    assert 'id="job-history-select"' in html
     assert "PDF Song ngữ (Dual)" in html
     assert "PDF Dịch (Mono)" in html
 
@@ -57,6 +58,8 @@ def test_static_api_js_accessible():
     assert 'bing: ""' in js
     assert "DEFAULT_MODELS" in js
     assert "isFreeProvider" in js
+    assert "deleteUpload" in js
+    assert "getRuntimeConfig" in js
 
 
 def test_static_app_js_accessible():
@@ -69,3 +72,7 @@ def test_static_app_js_accessible():
     assert "download-dual-btn" in js
     assert "dual_ready" in js
     assert "source_lang" in js
+    assert "/api/translate/file-stream" in js
+    assert "export_chunk" in js
+    assert "URL.createObjectURL" in js
+    assert "jobHistory" in js

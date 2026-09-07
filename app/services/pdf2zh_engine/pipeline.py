@@ -252,6 +252,13 @@ async def process_pdf2zh_stream(
         except Exception:
             pass
 
+        # Save only the requested translated pages.  ``doc_zh`` starts as a
+        # full clone so page numbers continue to match the source while the
+        # translation is running.  Keeping that clone unchanged for a partial
+        # request used to leak every unselected source page into the mono PDF.
+        if target_pages != list(range(total_doc_pages)):
+            doc_zh.select(target_pages)
+
         # Save mono translated PDF
         doc_zh.save(str(mono_out_path), deflate=True, garbage=3)
         doc_zh.close()

@@ -12,7 +12,7 @@ except ImportError:
 
 from app.config import settings
 from app.main import app
-from app.api.routes import JOB_STORE
+from app.api.routes import JOB_STORE, UPLOAD_STORE
 
 client = TestClient(app)
 
@@ -26,6 +26,21 @@ def _create_sample_pdf_bytes() -> bytes:
     return pdf_bytes
 
 
+def _write_valid_pdf(path: Path, text: str) -> bytes:
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((50, 72), text, fontsize=12)
+    doc.save(str(path))
+    doc.close()
+    return path.read_bytes()
+
+
+def test_runtime_config_reports_upload_limit():
+    response = client.get("/api/runtime-config")
+    assert response.status_code == 200
+    assert response.json()["max_upload_size_mb"] == settings.max_upload_size_mb
+
+
 def test_upload_pdf():
     pdf_bytes = _create_sample_pdf_bytes()
     response = client.post(
@@ -37,6 +52,13 @@ def test_upload_pdf():
     assert "file_id" in data
     assert data["total_pages"] == 1
     assert data["filename"] == "test.pdf"
+
+    file_id = data["file_id"]
+    assert (settings.upload_dir / f"{file_id}.pdf").exists()
+    delete_response = client.delete(f"/api/upload/{file_id}")
+    assert delete_response.status_code == 204
+    assert not (settings.upload_dir / f"{file_id}.pdf").exists()
+    assert file_id not in UPLOAD_STORE
 
 
 def test_download_not_found():
@@ -105,8 +127,8 @@ def test_translate_stream_pdf2zh_layout():
     file_id = upload_res.json()["file_id"]
 
     async def fake_pdf2zh_stream(file_path, page_indices, target_lang, translator, mono_out_path, dual_out_path, **kwargs):
-        Path(mono_out_path).write_bytes(b"%PDF-1.4 mono")
-        Path(dual_out_path).write_bytes(b"%PDF-1.4 dual")
+        _write_valid_pdf(Path(mono_out_path), "Mono translated page")
+        _write_valid_pdf(Path(dual_out_path), "Dual translated page")
         for idx, pno in enumerate(page_indices):
             yield {
                 "event": "page_progress",
@@ -149,6 +171,9 @@ def test_translate_stream_pdf2zh_layout():
         assert "pdf2zh_layout" in body
         assert "event: page_progress" in body
         assert "event: page_completed" in body
+        assert "event: export_start" in body
+        assert "event: export_chunk" in body
+        assert "event: export_ready" in body
         assert "event: completed" in body
         assert '"mono_ready": true' in body.lower()
         assert '"dual_ready": true' in body.lower()
@@ -212,39 +237,40 @@ def test_download_mono_and_dual_pdf():
     dual_path = settings.export_dir / f"{job_id}_dual.pdf"
     docx_path = settings.export_dir / f"{job_id}.docx"
 
-    mono_path.write_bytes(b"%PDF-1.4 MONO DATA")
-    dual_path.write_bytes(b"%PDF-1.4 DUAL DATA")
+    mono_bytes = _write_valid_pdf(mono_path, "MONO DATA")
+    dual_bytes = _write_valid_pdf(dual_path, "DUAL DATA")
     docx_path.write_bytes(b"DOCX DATA")
 
     try:
         # Test mono_pdf download
         res_mono = client.get(f"/api/download/{job_id}/mono_pdf")
         assert res_mono.status_code == 200
-        assert res_mono.content == b"%PDF-1.4 MONO DATA"
+        assert res_mono.content == mono_bytes
         assert res_mono.headers["content-type"] == "application/pdf"
         assert 'academic_paper_translated.pdf' in res_mono.headers.get("content-disposition", "")
+        assert res_mono.headers["cache-control"] == "private, no-store"
 
         # Test mono alias download
         res_mono_alias = client.get(f"/api/download/{job_id}/mono")
         assert res_mono_alias.status_code == 200
-        assert res_mono_alias.content == b"%PDF-1.4 MONO DATA"
+        assert res_mono_alias.content == mono_bytes
 
         # Test dual_pdf download
         res_dual = client.get(f"/api/download/{job_id}/dual_pdf")
         assert res_dual.status_code == 200
-        assert res_dual.content == b"%PDF-1.4 DUAL DATA"
+        assert res_dual.content == dual_bytes
         assert res_dual.headers["content-type"] == "application/pdf"
         assert 'academic_paper_bilingual.pdf' in res_dual.headers.get("content-disposition", "")
 
         # Test dual alias download
         res_dual_alias = client.get(f"/api/download/{job_id}/dual")
         assert res_dual_alias.status_code == 200
-        assert res_dual_alias.content == b"%PDF-1.4 DUAL DATA"
+        assert res_dual_alias.content == dual_bytes
 
         # Test standard pdf download when mono exists
         res_pdf = client.get(f"/api/download/{job_id}/pdf")
         assert res_pdf.status_code == 200
-        assert res_pdf.content == b"%PDF-1.4 MONO DATA"
+        assert res_pdf.content == mono_bytes
         assert 'academic_paper_translated.pdf' in res_pdf.headers.get("content-disposition", "")
 
         # Test docx download

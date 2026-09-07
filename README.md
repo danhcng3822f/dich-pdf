@@ -16,6 +16,7 @@
   - Dùng API Key AI của chính bạn: **OpenAI**, **DeepSeek**, **Google Gemini**, **Anthropic Claude**, hoặc **Custom OpenAI-Compatible API** (Ollama, vLLM, LMStudio...).
 - 🔑 **Bảo Mật Tuyệt Đối (BYOK)**: API Key được lưu trực tiếp trên trình duyệt của bạn (`LocalStorage`), không lưu trữ vĩnh viễn trên server.
 - ⚡ **Xem Đối Chiếu Song Ngữ Trực Tiếp**: Giao diện chia đôi màn hình (Side-by-Side) hiển thị ảnh trang PDF gốc đối chiếu với ảnh trang PDF dịch thật (ở chế độ PDF2ZH) hoặc bản xem trước Beamer slide (ở chế độ LaTeX).
+- 🗂️ **Lịch Sử Kết Quả Trong Phiên**: Giữ tối đa 5 lần dịch trong tab hiện tại để chuyển lại bản xem trước và tải đúng file của từng lần dịch.
 - 📡 **Tiến Trình Thời Gian Thực (SSE)**: Cập nhật bản dịch và tiến trình từng trang ngay lập tức mà không cần chờ toàn bộ file.
 - 📥 **Xuất Đa Định Dạng & PDF Song Ngữ**:
   - **PDF Dịch Đơn Ngữ (Mono PDF)**: Giữ nguyên bố cục gốc chuẩn pixel.
@@ -72,10 +73,12 @@ Mở trình duyệt và truy cập:
 
 3. **Theo Dõi & Tải Kết Quả**:
    - Xem kết quả đối chiếu song ngữ hiển thị trực tiếp theo từng trang.
+   - Dùng danh sách **Kết quả** để quay lại các lần dịch trước trong cùng tab trình duyệt.
    - Sau khi hoàn tất, tải về:
      - **PDF Dịch (Mono)**
      - **PDF Song ngữ (Dual)**
      - **Word (.docx)**, **Markdown (.md)** hoặc **LaTeX (.tex)**.
+   - Khi chọn một phạm vi trang, PDF Mono/Dual chỉ chứa đúng các trang trong phạm vi đó.
 
 ---
 
@@ -94,3 +97,5 @@ pytest tests/e2e/test_web_playwright.py -v
 ```
 
 > **Lưu ý:** Google/Bing miễn phí sử dụng giao diện web công khai, không phải API có SLA. Endpoint có thể bị giới hạn hoặc thay đổi. Sau khi retry thất bại, ứng dụng sẽ thử dịch vụ miễn phí còn lại; vì vậy nội dung trích xuất có thể được gửi tới cả Google và Microsoft. Test mạng thật chỉ chạy khi đặt `RUN_LIVE_TRANSLATION_TESTS=1`.
+
+> Khi chạy trên Vercel Functions, giao diện giới hạn file tải lên ở 4 MB để nằm dưới giới hạn request 4,5 MB của nền tảng. Chạy bằng `python run.py` vẫn hỗ trợ tối đa 50 MB.
