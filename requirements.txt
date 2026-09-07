@@ -10,3 +10,4 @@ pydantic-settings>=2.2.0
 pillow>=10.0.0
 numpy>=1.24.0
 pdfminer.six>=20250416
+tenacity>=8.2.0

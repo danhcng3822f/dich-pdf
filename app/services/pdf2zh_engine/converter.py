@@ -17,7 +17,34 @@ from pdfminer.pdfparser import PDFParser
 from pdfminer.pdfdocument import PDFDocument
 from pdfminer.utils import apply_matrix_pt, mult_matrix
 from pymupdf import Font
-from tenacity import retry, stop_after_attempt, wait_fixed
+
+try:
+    from tenacity import retry, stop_after_attempt, wait_fixed
+except ImportError:
+    import time
+    from functools import wraps
+
+    def wait_fixed(secs):
+        return secs
+
+    def stop_after_attempt(attempts):
+        return attempts
+
+    def retry(wait=None, stop=3, reraise=True):
+        def decorator(func):
+            @wraps(func)
+            def wrapper(*args, **kwargs):
+                max_attempts = stop if isinstance(stop, int) else 3
+                delay = wait if isinstance(wait, (int, float)) else 1
+                for attempt in range(1, max_attempts + 1):
+                    try:
+                        return func(*args, **kwargs)
+                    except Exception:
+                        if attempt == max_attempts and reraise:
+                            raise
+                        time.sleep(delay)
+            return wrapper
+        return decorator
 
 from app.services.pdf2zh_engine.adapter import BaseTranslator, create_translator
 from app.services.pdf2zh_engine.pdfinterp import PDFPageInterpreterEx
