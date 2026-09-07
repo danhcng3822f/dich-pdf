@@ -1,4 +1,5 @@
 import io
+import re
 from unittest.mock import MagicMock, Mock
 import numpy as np
 import pymupdf
@@ -28,6 +29,41 @@ class DummyTranslator(BaseTranslator):
 
     def do_translate(self, text: str) -> str:
         return self.mapping.get(text.strip(), f"Dịch: {text}")
+
+
+class RecordingCoverTranslator(BaseTranslator):
+    """Deterministic translator used by sparse cover-page regressions."""
+
+    handles_retries = True
+
+    def __init__(self):
+        super().__init__(name="recording-cover", lang_in="en", lang_out="vi")
+        self.calls = []
+
+    def do_translate(self, text: str) -> str:
+        self.calls.append(text.strip())
+        if "Artificial Intelligence" in text:
+            return "TIEU DE"
+        if "Insights and Recommendations" in text:
+            return "KHUYEN NGHI"
+        return text
+
+
+def make_sparse_cover_page():
+    """Create cover content in an order that exposed the all-ones fallback mask."""
+    doc = pymupdf.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((50, 40), "HEADER", fontsize=9)
+    page.insert_text((50, 180), "Artificial Intelligence", fontsize=40)
+    page.insert_text((50, 225), "and Learning", fontsize=40)
+    page.insert_text(
+        (50, 290),
+        "Insights and Recommendations",
+        fontsize=20,
+        fontname="tiit",
+    )
+    page.insert_text((50, 320), "May 2023", fontsize=10)
+    return doc, page
 
 
 def test_safe_float():
@@ -344,6 +380,141 @@ def test_patch_page_raw_miner_page_without_pageno():
     assert "ET" in ops
 
 
+def test_patch_page_model_none_keeps_sparse_cover_title_vertical_position():
+    doc, page = make_sparse_cover_page()
+    try:
+        translator = RecordingCoverTranslator()
+        converter = TranslateConverter(
+            PDFResourceManager(),
+            translator=translator,
+            noto_name="helv",
+            noto=pymupdf.Font("helv"),
+        )
+
+        ops = patch_page(page, model=None, converter=converter)
+
+        title_matrices = re.findall(
+            r"/\S+\s+40\.000000 Tf 1 0 0 1 "
+            r"([-\d.]+) ([-\d.]+) Tm",
+            ops,
+        )
+        assert title_matrices
+        title_baseline_y = float(title_matrices[0][1])
+        original_title_baseline_y = page.rect.height - 180
+        assert title_baseline_y == pytest.approx(original_title_baseline_y, abs=1.0)
+        assert not any(
+            "HEADER" in call and "Artificial Intelligence" in call
+            for call in translator.calls
+        )
+    finally:
+        doc.close()
+
+
+def test_patch_page_model_none_translates_italic_cover_prose():
+    doc, page = make_sparse_cover_page()
+    try:
+        translator = RecordingCoverTranslator()
+        converter = TranslateConverter(
+            PDFResourceManager(),
+            translator=translator,
+            noto_name="helv",
+            noto=pymupdf.Font("helv"),
+        )
+
+        patch_page(page, model=None, converter=converter)
+
+        assert "Insights and Recommendations" in translator.calls
+    finally:
+        doc.close()
+
+
+def _add_text_run(ltpage, text, x, y, font, graphic_state):
+    """Add a tightly spaced LTChar run with predictable PDFMiner geometry."""
+    for index, char in enumerate(text):
+        item = LTChar(
+            (1, 0, 0, 1, x + index * 6, y),
+            font,
+            12,
+            1.0,
+            0,
+            char,
+            0.5,
+            (0, 0),
+            None,
+            graphic_state,
+        )
+        item.cid = ord(char)
+        item.font = font
+        ltpage.add(item)
+
+
+def test_translated_paragraphs_preserve_rgb_and_gray_fill_colors():
+    translator = DummyTranslator(mapping={"Orange": "Cam", "Gray": "Xam"})
+    layout = np.ones((300, 300), dtype=int)
+    layout[170:230, :] = 2
+    layout[70:130, :] = 3
+    converter = TranslateConverter(
+        PDFResourceManager(),
+        translator=translator,
+        layout={0: layout},
+        noto_name="helv",
+        noto=pymupdf.Font("helv"),
+    )
+
+    source_font = Mock()
+    source_font.fontname = "SourceSans"
+    source_font.char_width.return_value = 0.5
+    rgb_state = PDFGraphicState()
+    rgb_state.ncolor = (0.906, 0.322, 0.0)
+    gray_state = PDFGraphicState()
+    gray_state.ncolor = 0.251
+
+    ltpage = LTPage(0, (0, 0, 300, 300))
+    _add_text_run(ltpage, "Orange", 20, 200, source_font, rgb_state)
+    _add_text_run(ltpage, "Gray", 20, 100, source_font, gray_state)
+
+    ops = converter.receive_layout(ltpage)
+
+    assert re.search(
+        r"0\.906(?:0*)?\s+0\.322(?:0*)?\s+0(?:\.0+)?\s+rg",
+        ops,
+    )
+    assert re.search(r"0\.251(?:0*)?\s+g", ops)
+
+
+def test_translated_vietnamese_uses_one_full_coverage_font():
+    translator = DummyTranslator(mapping={"Source": "Trí tuệ"})
+    converter = TranslateConverter(
+        PDFResourceManager(),
+        translator=translator,
+        layout={0: np.full((300, 300), 2, dtype=int)},
+        noto_name="noto",
+        noto=Mock(),
+    )
+    converter.noto.has_glyph.side_effect = lambda codepoint: codepoint
+    converter.noto.char_lengths.side_effect = (
+        lambda text, size: [size * 0.5 for _ in text]
+    )
+
+    tiro_font = Mock()
+    tiro_font.to_unichr.side_effect = chr
+    tiro_font.char_width.return_value = 0.5
+    converter.fontmap = {"tiro": tiro_font}
+
+    source_font = Mock()
+    source_font.fontname = "SourceSans"
+    source_font.char_width.return_value = 0.5
+    graphic_state = PDFGraphicState()
+    graphic_state.ncolor = 0.0
+    ltpage = LTPage(0, (0, 0, 300, 300))
+    _add_text_run(ltpage, "Source", 20, 200, source_font, graphic_state)
+
+    ops = converter.receive_layout(ltpage)
+
+    assert "/noto " in ops
+    assert "/tiro " not in ops
+
+
 def test_pdfinterp_colorspace_and_scn_sc_operators():
     from pdfminer.pdfcolor import PREDEFINED_COLORSPACE
     from pdfminer.pdfdevice import PDFDevice
@@ -377,5 +548,3 @@ def test_pdfinterp_colorspace_and_scn_sc_operators():
     child = interp.dup()
     assert child.scs == interp.scs
     assert child.ncs == interp.ncs
-
-

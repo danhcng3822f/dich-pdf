@@ -27,6 +27,8 @@ from .converter import (
     Paragraph,
     OpType,
     TranslateConverter,
+    build_page_layout,
+    build_text_block_layout,
     patch_page,
 )
 from .pipeline import (
@@ -61,6 +63,8 @@ __all__ = [
     "Paragraph",
     "OpType",
     "TranslateConverter",
+    "build_page_layout",
+    "build_text_block_layout",
     "patch_page",
     "render_pixmap_base64",
     "create_dual_pdf",

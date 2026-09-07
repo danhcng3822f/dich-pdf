@@ -68,6 +68,7 @@ class Paragraph:
         y1: float,
         size: float,
         brk: bool,
+        color: Any = None,
     ) -> None:
         self.y: float = y
         self.x: float = x
@@ -77,6 +78,7 @@ class Paragraph:
         self.y1: float = y1
         self.size: float = size
         self.brk: bool = brk
+        self.color: Any = color
 
 
 class PDFConverterEx(PDFConverter):
@@ -255,7 +257,7 @@ class TranslateConverter(PDFConverterEx):
                     return True
             else:
                 if re.match(
-                    r"(CM[^R]|MS.M|XY|MT|BL|RM|EU|LA|RS|LINE|LCIRCLE|TeX-|rsfs|txsy|wasy|stmary|.*Mono|.*Code|.*Ital|.*Sym|.*Math)",
+                    r"(CM[^R]|MS.M|XY|MT|BL|RM|EU|LA|RS|LINE|LCIRCLE|TeX-|rsfs|txsy|wasy|stmary|.*Mono|.*Code|.*Sym|.*Math)",
                     font,
                 ):
                     return True
@@ -404,6 +406,9 @@ class TranslateConverter(PDFConverterEx):
                     pstk[-1].x1 = max(pstk[-1].x1, child.x1)
                     pstk[-1].y0 = min(pstk[-1].y0, child.y0)
                     pstk[-1].y1 = max(pstk[-1].y1, child.y1)
+                    if child.get_text().strip() and pstk[-1].color is None:
+                        graphicstate = getattr(child, "graphicstate", None)
+                        pstk[-1].color = getattr(graphicstate, "ncolor", None)
                 xt = child
                 xt_cls = cls
 
@@ -444,6 +449,7 @@ class TranslateConverter(PDFConverterEx):
                         vstk[0].y1,
                         vstk[0].size,
                         False,
+                        getattr(getattr(vstk[0], "graphicstate", None), "ncolor", None),
                     )
                 )
             var.append(vstk)
@@ -510,8 +516,34 @@ class TranslateConverter(PDFConverterEx):
         _x, _y = 0.0, 0.0
         ops_list: List[str] = []
 
-        def gen_op_txt(font: str, size: float, x: float, y: float, rtxt: str) -> str:
-            return f"/{font} {size:f} Tf 1 0 0 1 {x:f} {y:f} Tm [<{rtxt}>] TJ "
+        def gen_op_color(color: Any) -> str:
+            if color is None:
+                return "0 g "
+            values = color if isinstance(color, (tuple, list)) else (color,)
+            try:
+                components = tuple(float(value) for value in values)
+            except (TypeError, ValueError):
+                return "0 g "
+            if len(components) == 1:
+                return f"{components[0]:.6f} g "
+            if len(components) == 3:
+                return " ".join(f"{value:.6f}" for value in components) + " rg "
+            if len(components) == 4:
+                return " ".join(f"{value:.6f}" for value in components) + " k "
+            return "0 g "
+
+        def gen_op_txt(
+            font: str,
+            size: float,
+            x: float,
+            y: float,
+            rtxt: str,
+            color: Any,
+        ) -> str:
+            return (
+                f"{gen_op_color(color)}/{font} {size:f} Tf "
+                f"1 0 0 1 {x:f} {y:f} Tm [<{rtxt}>] TJ "
+            )
 
         def gen_op_line(
             x: float, y: float, xlen: float, ylen: float, linewidth: float
@@ -534,8 +566,57 @@ class TranslateConverter(PDFConverterEx):
             tx: float = x
             fcur_ = fcur
             ptr: int = 0
+            paragraph_color = pstk[id].color
 
             ops_vals: List[dict] = []
+
+            def font_and_advance(ch: str) -> tuple[str, float]:
+                font_name: Optional[str] = None
+                if self.noto_name:
+                    try:
+                        if (
+                            self.noto is None
+                            or not hasattr(self.noto, "has_glyph")
+                            or self.noto.has_glyph(ord(ch))
+                        ):
+                            font_name = self.noto_name
+                    except Exception:
+                        font_name = self.noto_name
+                if font_name is None:
+                    try:
+                        if (
+                            "tiro" in self.fontmap
+                            and self.fontmap["tiro"].to_unichr(ord(ch)) == ch
+                        ):
+                            font_name = "tiro"
+                    except Exception:
+                        pass
+                if font_name is None:
+                    font_name = self.noto_name or "tiro"
+
+                if font_name == self.noto_name:
+                    if self.noto is not None and hasattr(self.noto, "char_lengths"):
+                        advance = self.noto.char_lengths(ch, size)[0]
+                    else:
+                        advance = size * 0.5
+                elif font_name in self.fontmap and hasattr(
+                    self.fontmap[font_name], "char_width"
+                ):
+                    advance = self.fontmap[font_name].char_width(ord(ch)) * size
+                else:
+                    advance = size * 0.5
+                return font_name, advance
+
+            def measure_word(start: int) -> float:
+                end = start
+                width = 0.0
+                while end < len(new) and not new[end].isspace():
+                    if re.match(r"\{\s*v[\d\s]+\}", new[end:], re.IGNORECASE):
+                        break
+                    _, char_width = font_and_advance(new[end])
+                    width += char_width
+                    end += 1
+                return width
 
             while ptr < len(new):
                 vy_regex = re.match(r"\{\s*v([\d\s]+)\}", new[ptr:], re.IGNORECASE)
@@ -555,34 +636,34 @@ class TranslateConverter(PDFConverterEx):
                         mod = getattr(var[vid][-1], "width", 0.0)
                 else:
                     ch = new[ptr]
-                    fcur_ = None
-                    try:
-                        if (
-                            fcur_ is None
-                            and "tiro" in self.fontmap
-                            and self.fontmap["tiro"].to_unichr(ord(ch)) == ch
-                        ):
-                            fcur_ = "tiro"
-                    except Exception:
-                        pass
-                    if fcur_ is None:
-                        fcur_ = self.noto_name
-                    if fcur_ == self.noto_name:
-                        if self.noto is not None and hasattr(self.noto, "char_lengths"):
-                            adv = self.noto.char_lengths(ch, size)[0]
-                        else:
-                            adv = size * 0.5
-                    else:
-                        if fcur_ in self.fontmap and hasattr(self.fontmap[fcur_], "char_width"):
-                            adv = self.fontmap[fcur_].char_width(ord(ch)) * size
-                        else:
-                            adv = size * 0.5
+                    if (
+                        brk
+                        and not ch.isspace()
+                        and (ptr == 0 or new[ptr - 1].isspace())
+                        and x > x0
+                        and x + measure_word(ptr) > x1 + 0.1 * size
+                    ):
+                        if cstk:
+                            ops_vals.append({
+                                "type": OpType.TEXT,
+                                "font": fcur or self.noto_name,
+                                "size": size,
+                                "x": tx,
+                                "dy": 0.0,
+                                "rtxt": raw_string(fcur, cstk),
+                                "lidx": lidx,
+                                "color": paragraph_color,
+                            })
+                            cstk = ""
+                        x = x0
+                        lidx += 1
+                    fcur_, adv = font_and_advance(ch)
                     ptr += 1
 
                 if (
                     fcur_ != fcur
                     or vy_regex
-                    or x + adv > x1 + 0.1 * size
+                    or (brk and x + adv > x1 + 0.1 * size)
                 ):
                     if cstk:
                         ops_vals.append({
@@ -593,6 +674,7 @@ class TranslateConverter(PDFConverterEx):
                             "dy": 0.0,
                             "rtxt": raw_string(fcur, cstk),
                             "lidx": lidx,
+                            "color": paragraph_color,
                         })
                         cstk = ""
 
@@ -624,6 +706,11 @@ class TranslateConverter(PDFConverterEx):
                             "dy": fix + vch.y0 - var[vid][0].y0,
                             "rtxt": raw_string(str(font_id_key), vc),
                             "lidx": lidx,
+                            "color": getattr(
+                                getattr(vch, "graphicstate", None),
+                                "ncolor",
+                                paragraph_color,
+                            ),
                         })
                         if log.isEnabledFor(logging.DEBUG):
                             lstk.append(
@@ -677,6 +764,7 @@ class TranslateConverter(PDFConverterEx):
                     "dy": 0.0,
                     "rtxt": raw_string(fcur, cstk),
                     "lidx": lidx,
+                    "color": paragraph_color,
                 })
 
             line_height = default_line_height
@@ -692,6 +780,7 @@ class TranslateConverter(PDFConverterEx):
                             vals["x"],
                             vals["dy"] + y - vals["lidx"] * size * line_height,
                             vals["rtxt"],
+                            vals["color"],
                         )
                     )
                 elif vals["type"] == OpType.LINE:
@@ -721,6 +810,122 @@ class TranslateConverter(PDFConverterEx):
         return ops
 
 
+def build_text_block_layout(page: Any, height: int, width: int) -> np.ndarray:
+    """Build a safe layout mask from non-empty PyMuPDF text blocks.
+
+    PDFMiner expects bottom-left coordinates while PyMuPDF text boxes use a
+    top-left origin.  Each text block receives its own class so the converter
+    cannot merge a cover-page header, title, subtitle and footer into one
+    paragraph when DocLayout is unavailable.
+    """
+    layout = np.ones((height, width), dtype=int)
+    try:
+        page_dict = page.get_text("dict")
+        page_rect = page.rect
+        scale_x = width / max(float(page_rect.width), 1.0)
+        scale_y = height / max(float(page_rect.height), 1.0)
+    except Exception as exc:
+        log.warning("Could not build text-block fallback layout: %s", exc)
+        return layout
+
+    next_class = 2
+    for block in page_dict.get("blocks", []):
+        if block.get("type", 0) != 0:
+            continue
+
+        spans = [
+            span
+            for line in block.get("lines", [])
+            for span in line.get("spans", [])
+            if str(span.get("text", "")).strip()
+        ]
+        if not spans:
+            continue
+
+        x0 = min(float(span["bbox"][0]) for span in spans)
+        y0 = min(float(span["bbox"][1]) for span in spans)
+        x1 = max(float(span["bbox"][2]) for span in spans)
+        y1 = max(float(span["bbox"][3]) for span in spans)
+
+        pixel_x0 = (x0 - float(page_rect.x0)) * scale_x
+        pixel_x1 = (x1 - float(page_rect.x0)) * scale_x
+        pixel_y0 = (y0 - float(page_rect.y0)) * scale_y
+        pixel_y1 = (y1 - float(page_rect.y0)) * scale_y
+
+        left = int(np.clip(np.floor(pixel_x0 - 1), 0, width - 1))
+        right = int(np.clip(np.ceil(pixel_x1 + 1), 1, width))
+        bottom = int(np.clip(np.floor(height - pixel_y1 - 1), 0, height - 1))
+        top = int(np.clip(np.ceil(height - pixel_y0 + 1), 1, height))
+        if right <= left or top <= bottom:
+            continue
+
+        layout[bottom:top, left:right] = next_class
+        next_class += 1
+
+    return layout
+
+
+def build_page_layout(page: Any, pix: Any, model: Optional[Any]) -> np.ndarray:
+    """Build a DocLayout mask, falling back to native PDF text blocks."""
+    height, width = pix.height, pix.width
+    if model is None:
+        return build_text_block_layout(page, height, width)
+
+    layout = np.ones((height, width), dtype=int)
+    try:
+        image = np.frombuffer(pix.samples, np.uint8).reshape(
+            height, width, 3
+        )[:, :, ::-1]
+        image_size = max(32, int(height / 32) * 32)
+        results = model.predict(image, imgsz=image_size)
+    except Exception as exc:
+        log.warning("DocLayout prediction failed; using text-block fallback: %s", exc)
+        return build_text_block_layout(page, height, width)
+
+    if not results:
+        return build_text_block_layout(page, height, width)
+
+    page_layout = results[0]
+    frozen_classes = {
+        "abandon",
+        "figure",
+        "table",
+        "isolate_formula",
+        "formula_caption",
+    }
+    boxes = getattr(page_layout, "boxes", [])
+    names = getattr(page_layout, "names", {})
+    if boxes is None or len(boxes) == 0:
+        return build_text_block_layout(page, height, width)
+
+    def class_name(item: Any) -> str:
+        class_id = int(item.cls)
+        if isinstance(names, dict):
+            return names.get(class_id, "")
+        return names[class_id] if class_id < len(names) else ""
+
+    def clipped_box(item: Any) -> tuple[int, int, int, int]:
+        x0, y0, x1, y1 = np.squeeze(item.xyxy)
+        return (
+            int(np.clip(int(x0 - 1), 0, width - 1)),
+            int(np.clip(int(height - y1 - 1), 0, height - 1)),
+            int(np.clip(int(x1 + 1), 0, width)),
+            int(np.clip(int(height - y0 + 1), 0, height)),
+        )
+
+    for index, item in enumerate(boxes):
+        if class_name(item) not in frozen_classes:
+            x0, y0, x1, y1 = clipped_box(item)
+            layout[y0:y1, x0:x1] = index + 2
+
+    for item in boxes:
+        if class_name(item) in frozen_classes:
+            x0, y0, x1, y1 = clipped_box(item)
+            layout[y0:y1, x0:x1] = 0
+
+    return layout
+
+
 def patch_page(
     page: Any,
     model: Optional[Any] = None,
@@ -741,48 +946,7 @@ def patch_page(
     # PyMuPDF Page (has parent and get_pixmap)
     if hasattr(page, "parent") and hasattr(page, "get_pixmap"):
         pix = page.get_pixmap()
-        h, w = pix.height, pix.width
-        box = np.ones((h, w), dtype=int)
-
-        if model is not None:
-            image = np.frombuffer(pix.samples, np.uint8).reshape(h, w, 3)[:, :, ::-1]
-            imgsz = max(32, int(h / 32) * 32)
-            results = model.predict(image, imgsz=imgsz)
-            if results:
-                page_layout = results[0]
-                vcls = {"abandon", "figure", "table", "isolate_formula", "formula_caption"}
-                boxes = getattr(page_layout, "boxes", [])
-                names = getattr(page_layout, "names", {})
-
-                for i, d in enumerate(boxes):
-                    cls_id = int(d.cls)
-                    cls_name = names.get(cls_id, "") if isinstance(names, dict) else (
-                        names[cls_id] if cls_id < len(names) else ""
-                    )
-                    if cls_name not in vcls:
-                        x0, y0, x1, y1 = np.squeeze(d.xyxy)
-                        x0, y0, x1, y1 = (
-                            np.clip(int(x0 - 1), 0, w - 1),
-                            np.clip(int(h - y1 - 1), 0, h - 1),
-                            np.clip(int(x1 + 1), 0, w - 1),
-                            np.clip(int(h - y0 + 1), 0, h - 1),
-                        )
-                        box[y0:y1, x0:x1] = i + 2
-
-                for i, d in enumerate(boxes):
-                    cls_id = int(d.cls)
-                    cls_name = names.get(cls_id, "") if isinstance(names, dict) else (
-                        names[cls_id] if cls_id < len(names) else ""
-                    )
-                    if cls_name in vcls:
-                        x0, y0, x1, y1 = np.squeeze(d.xyxy)
-                        x0, y0, x1, y1 = (
-                            np.clip(int(x0 - 1), 0, w - 1),
-                            np.clip(int(h - y1 - 1), 0, h - 1),
-                            np.clip(int(x1 + 1), 0, w - 1),
-                            np.clip(int(h - y0 + 1), 0, h - 1),
-                        )
-                        box[y0:y1, x0:x1] = 0
+        box = build_page_layout(page, pix, model)
 
         page_no = getattr(page, "number", 0)
         converter.layout[page_no] = box

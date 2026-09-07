@@ -6,7 +6,6 @@ import re
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional, Union
 
-import numpy as np
 import pymupdf
 from pdfminer.pdfdocument import PDFDocument
 from pdfminer.pdfinterp import PDFResourceManager
@@ -14,7 +13,7 @@ from pdfminer.pdfpage import PDFPage
 from pdfminer.pdfparser import PDFParser
 
 from app.services.pdf2zh_engine.adapter import BaseTranslator
-from app.services.pdf2zh_engine.converter import TranslateConverter
+from app.services.pdf2zh_engine.converter import TranslateConverter, build_page_layout
 from app.services.pdf2zh_engine.doclayout import load_layout_model
 from app.services.pdf2zh_engine.font_manager import get_font_path
 from app.services.pdf2zh_engine.pdfinterp import PDFPageInterpreterEx
@@ -209,47 +208,7 @@ async def process_pdf2zh_stream(
             # 3. Predict page layout (with fallback if model is None)
             page = doc_zh[pno]
             pix = page.get_pixmap()
-            box = np.ones((pix.height, pix.width), dtype=int)
-            h, w = box.shape
-
-            if model is not None:
-                image = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, 3)[:, :, ::-1]
-                imgsz = max(32, int(pix.height / 32) * 32)
-                results = model.predict(image, imgsz=imgsz)
-                vcls = {"abandon", "figure", "table", "isolate_formula", "formula_caption"}
-                if results:
-                    pl = results[0]
-                    boxes = getattr(pl, "boxes", [])
-                    names = getattr(pl, "names", {})
-                    for i, d in enumerate(boxes):
-                        cls_id = int(d.cls)
-                        cls_name = names.get(cls_id, "") if isinstance(names, dict) else (
-                            names[cls_id] if cls_id < len(names) else ""
-                        )
-                        if cls_name not in vcls:
-                            x0, y0, x1, y1 = np.squeeze(d.xyxy)
-                            x0, y0, x1, y1 = (
-                                np.clip(int(x0 - 1), 0, w - 1),
-                                np.clip(int(h - y1 - 1), 0, h - 1),
-                                np.clip(int(x1 + 1), 0, w - 1),
-                                np.clip(int(h - y0 + 1), 0, h - 1),
-                            )
-                            box[y0:y1, x0:x1] = i + 2
-
-                    for i, d in enumerate(boxes):
-                        cls_id = int(d.cls)
-                        cls_name = names.get(cls_id, "") if isinstance(names, dict) else (
-                            names[cls_id] if cls_id < len(names) else ""
-                        )
-                        if cls_name in vcls:
-                            x0, y0, x1, y1 = np.squeeze(d.xyxy)
-                            x0, y0, x1, y1 = (
-                                np.clip(int(x0 - 1), 0, w - 1),
-                                np.clip(int(h - y1 - 1), 0, h - 1),
-                                np.clip(int(x1 + 1), 0, w - 1),
-                                np.clip(int(h - y0 + 1), 0, h - 1),
-                            )
-                            box[y0:y1, x0:x1] = 0
+            box = build_page_layout(page, pix, model)
 
             converter.layout[pno] = box
 
