@@ -49,6 +49,22 @@ class RecordingCoverTranslator(BaseTranslator):
         return text
 
 
+class RecordingTocTranslator(BaseTranslator):
+    """Expose the paragraph boundaries used for dense table-of-contents pages."""
+
+    handles_retries = True
+
+    def __init__(self, mapping):
+        super().__init__(name="recording-toc", lang_in="en", lang_out="vi")
+        self.mapping = mapping
+        self.calls = []
+
+    def do_translate(self, text: str) -> str:
+        source = text.strip()
+        self.calls.append(source)
+        return self.mapping.get(source, source)
+
+
 def make_sparse_cover_page():
     """Create cover content in an order that exposed the all-ones fallback mask."""
     doc = pymupdf.open()
@@ -64,6 +80,79 @@ def make_sparse_cover_page():
     )
     page.insert_text((50, 320), "May 2023", fontsize=10)
     return doc, page
+
+
+def make_dense_toc_page():
+    """Create multiline TOC blocks matching the structure of ai-report.pdf."""
+    doc = pymupdf.open()
+    page = doc.new_page(width=612, height=792)
+    orange = (0.91, 0.32, 0.0)
+    blue = (0.0, 0.32, 0.65)
+    right_edge = 543
+
+    def toc_source(label, page_number, x, size):
+        prefix = f"{label} "
+        suffix = f" {page_number}"
+        dot_width = pymupdf.get_text_length(".", fontname="helv", fontsize=size)
+        fixed_width = pymupdf.get_text_length(
+            prefix + suffix,
+            fontname="helv",
+            fontsize=size,
+        )
+        dot_count = max(3, int((right_edge - x - fixed_width) / dot_width))
+        return prefix + "." * dot_count + suffix
+
+    entries = [
+        ("Introduction", "1", 54, 12, orange),
+        ("Rising Interest in AI in Education", "2", 65, 10, blue),
+        ("Three Reasons to Address AI in Education Now", "3", 65, 10, blue),
+        ("Toward Policies for AI in Education", "4", 65, 10, blue),
+        ("Building Ethical Policies Together", "6", 54, 12, orange),
+        ("Guiding Questions", "7", 65, 10, blue),
+        ("Foundation 1: Center People", "8", 65, 10, blue),
+    ]
+    source_lines = {
+        label: toc_source(label, page_number, x, size)
+        for label, page_number, x, size, _ in entries
+    }
+
+    page.insert_text(
+        (54, 86),
+        "Table of Contents",
+        fontsize=24,
+        color=orange,
+    )
+    page.insert_text(
+        (54, 116),
+        source_lines["Introduction"],
+        fontsize=12,
+        color=orange,
+    )
+    page.insert_textbox(
+        pymupdf.Rect(65, 122, 543, 190),
+        source_lines["Rising Interest in AI in Education"]
+        + "\n"
+        + source_lines["Three Reasons to Address AI in Education Now"]
+        + "\n"
+        + source_lines["Toward Policies for AI in Education"],
+        fontsize=10,
+        color=blue,
+    )
+    page.insert_text(
+        (54, 216),
+        source_lines["Building Ethical Policies Together"],
+        fontsize=12,
+        color=orange,
+    )
+    page.insert_textbox(
+        pymupdf.Rect(65, 222, 543, 276),
+        source_lines["Guiding Questions"]
+        + "\n"
+        + source_lines["Foundation 1: Center People"],
+        fontsize=10,
+        color=blue,
+    )
+    return doc, page, entries, source_lines, right_edge
 
 
 def test_safe_float():
@@ -424,6 +513,164 @@ def test_patch_page_model_none_translates_italic_cover_prose():
         patch_page(page, model=None, converter=converter)
 
         assert "Insights and Recommendations" in translator.calls
+    finally:
+        doc.close()
+
+
+@pytest.mark.parametrize("layout_mode", ["fallback", "coarse-model"])
+def test_patch_page_keeps_dense_toc_rows_separate_and_aligned(layout_mode):
+    long_vietnamese_label = (
+        "Ba lý do cấp thiết cần giải quyết ngay những vấn đề về trí tuệ nhân tạo "
+        "trong giáo dục ở thời điểm hiện tại, đồng thời bảo đảm an toàn, công bằng "
+        "và minh bạch cho mọi nhà trường"
+    )
+    translations = {
+        "Table of Contents": "MUCLUC",
+        "Introduction": "GIOITHIEU",
+        "Rising Interest in AI in Education": "SUQUANTAM",
+        "Three Reasons to Address AI in Education Now": long_vietnamese_label,
+        "Toward Policies for AI in Education": "HUONGTOICHINHSACH",
+        "Building Ethical Policies Together": "CHINHSACHCONGBANG",
+        "Guiding Questions": "CAUHOIDINHHUONG",
+        "Foundation 1: Center People": "NENTANGCONNGUOI",
+    }
+    doc, page, entries, source_lines, right_edge = make_dense_toc_page()
+    try:
+        translator = RecordingTocTranslator(translations)
+        converter = TranslateConverter(
+            PDFResourceManager(),
+            translator=translator,
+            thread=1,
+            noto_name="noto",
+            noto=None,
+        )
+
+        model = None
+        if layout_mode == "coarse-model":
+            model = Mock()
+            text_box = Mock()
+            text_box.cls = 0
+            text_box.xyxy = np.array([[0, 0, page.rect.width, page.rect.height]])
+            prediction = Mock()
+            prediction.boxes = [text_box]
+            prediction.names = {0: "text"}
+            model.predict.return_value = [prediction]
+
+        ops = patch_page(page, model=model, converter=converter)
+
+        labels = [label for label, _, _, _, _ in entries]
+        assert translator.calls == ["Table of Contents", *labels]
+        assert all("..." not in call for call in translator.calls[1:])
+
+        text_ops = []
+        for match in re.finditer(
+            r"/(?P<font>\S+)\s+(?P<size>[-\d.]+) Tf "
+            r"(?P<scale>[-\d.]+) 0 0 1 "
+            r"(?P<x>[-\d.]+) (?P<y>[-\d.]+) Tm "
+            r"\[<(?P<raw>[0-9a-fA-F]*)>\] TJ",
+            ops,
+        ):
+            font = match.group("font")
+            raw = match.group("raw")
+            unit = 4 if font == "noto" else 2
+            if not raw or len(raw) % unit:
+                continue
+            text_ops.append(
+                {
+                    "font": font,
+                    "size": float(match.group("size")),
+                    "scale": float(match.group("scale")),
+                    "x": float(match.group("x")),
+                    "y": float(match.group("y")),
+                    "text": "".join(
+                        chr(int(raw[index:index + unit], 16))
+                        for index in range(0, len(raw), unit)
+                    ),
+                }
+            )
+
+        source_baselines = {}
+        for block in page.get_text("dict")["blocks"]:
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    source = span.get("text", "").strip()
+                    for label, full_source in source_lines.items():
+                        if source == full_source:
+                            source_baselines[label] = page.rect.height - span["origin"][1]
+
+        source_page_number_x = {}
+        page_numbers = {label: page_number for label, page_number, *_ in entries}
+        for block in page.get_text("rawdict")["blocks"]:
+            for line in block.get("lines", []):
+                chars = [
+                    char
+                    for span in line.get("spans", [])
+                    for char in span.get("chars", [])
+                ]
+                source = "".join(char["c"] for char in chars).strip()
+                for label, full_source in source_lines.items():
+                    if source == full_source:
+                        page_number_length = len(page_numbers[label])
+                        source_page_number_x[label] = chars[-page_number_length]["bbox"][0]
+
+        translated_baselines = []
+        for label, page_number, original_x, _, _ in entries:
+            baseline = source_baselines[label]
+            translated_label = translations[label]
+            label_matches = [
+                item for item in text_ops if item["text"] == translated_label
+            ]
+            assert len(label_matches) == 1, (
+                f"TOC label must be rendered once on one baseline: {label}"
+            )
+            label_op = label_matches[0]
+            translated_baselines.append(label_op["y"])
+            assert label_op["x"] == pytest.approx(original_x, abs=1.0)
+            assert label_op["y"] == pytest.approx(baseline, abs=1.0)
+
+            page_matches = [
+                item
+                for item in text_ops
+                if item["text"].strip() == page_number
+                and item["y"] == pytest.approx(baseline, abs=1.0)
+            ]
+            assert len(page_matches) == 1, (
+                f"Terminal page number must be preserved separately: {label}"
+            )
+            page_op = page_matches[0]
+            assert right_edge - 20 <= page_op["x"] <= right_edge
+            assert page_op["x"] == pytest.approx(
+                source_page_number_x[label],
+                abs=3.0,
+            )
+
+            leader_matches = [
+                item
+                for item in text_ops
+                if len(item["text"].strip()) >= 3
+                and set(item["text"].strip()) == {"."}
+                and item["y"] == pytest.approx(baseline, abs=1.0)
+            ]
+            assert leader_matches, f"Dotted leader was not regenerated: {label}"
+
+            if label == "Three Reasons to Address AI in Education Now":
+                estimated_right = (
+                    label_op["x"]
+                    + len(long_vietnamese_label)
+                    * label_op["size"]
+                    * 0.5
+                    * label_op["scale"]
+                )
+                assert estimated_right <= page_op["x"] - 3
+
+        assert translated_baselines == sorted(translated_baselines, reverse=True)
+        assert all(
+            upper - lower >= 9
+            for upper, lower in zip(
+                translated_baselines,
+                translated_baselines[1:],
+            )
+        )
     finally:
         doc.close()
 

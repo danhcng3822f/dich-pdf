@@ -51,6 +51,24 @@ from app.services.pdf2zh_engine.pdfinterp import PDFPageInterpreterEx
 
 log = logging.getLogger(__name__)
 
+_TOC_PAGE_TOKEN = r"(?:(?:[A-Za-z]+-)?\d+|[ivxlcdm]+)"
+_TOC_ENTRY_RE = re.compile(
+    rf"^\s*(?P<label>\S.*?)\s*"
+    rf"(?P<leader>\.{{3,}}|(?:…\s*){{2,}})\s*"
+    rf"(?P<page>{_TOC_PAGE_TOKEN}(?:\s*[-–]\s*{_TOC_PAGE_TOKEN})?)\s*$",
+    re.IGNORECASE,
+)
+
+
+def split_toc_entry(text: str) -> Optional[tuple[str, str]]:
+    """Split a dotted-leader TOC row into its label and terminal page token."""
+    match = _TOC_ENTRY_RE.fullmatch(text)
+    if not match:
+        return None
+    label = match.group("label").strip()
+    page = re.sub(r"\s+", " ", match.group("page")).strip()
+    return (label, page) if label and page else None
+
 
 class OpType(Enum):
     TEXT = "text"
@@ -69,6 +87,7 @@ class Paragraph:
         size: float,
         brk: bool,
         color: Any = None,
+        toc_page_number: Optional[str] = None,
     ) -> None:
         self.y: float = y
         self.x: float = x
@@ -79,6 +98,7 @@ class Paragraph:
         self.size: float = size
         self.brk: bool = brk
         self.color: Any = color
+        self.toc_page_number: Optional[str] = toc_page_number
 
 
 class PDFConverterEx(PDFConverter):
@@ -461,6 +481,16 @@ class TranslateConverter(PDFConverterEx):
             vlen.append(l)
 
         # B. Paragraph translation
+        translation_sources: List[str] = []
+        for index, source_text in enumerate(sstk):
+            toc_entry = split_toc_entry(source_text)
+            if toc_entry is not None and index < len(pstk):
+                label, page_number = toc_entry
+                pstk[index].toc_page_number = page_number
+                translation_sources.append(label)
+            else:
+                translation_sources.append(source_text)
+
         def worker(s: str) -> str:
             if not s.strip() or re.match(r"^\{v\d+\}$", s.strip()):
                 return s
@@ -481,8 +511,16 @@ class TranslateConverter(PDFConverterEx):
 
         max_workers = self.thread if (self.thread is not None and self.thread > 0) else None
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            news = list(executor.map(translate_worker, sstk))
-        self.last_page_text = "\n\n".join(news)
+            news = list(executor.map(translate_worker, translation_sources))
+        summary_lines = []
+        for index, translated_text in enumerate(news):
+            page_number = pstk[index].toc_page_number if index < len(pstk) else None
+            summary_lines.append(
+                f"{translated_text} … {page_number}"
+                if page_number is not None
+                else translated_text
+            )
+        self.last_page_text = "\n\n".join(summary_lines)
 
         # C. Typesetting
         def raw_string(fcur: Optional[str], cstk: str) -> str:
@@ -539,16 +577,105 @@ class TranslateConverter(PDFConverterEx):
             y: float,
             rtxt: str,
             color: Any,
+            horizontal_scale: float = 1.0,
         ) -> str:
+            text_matrix = (
+                "1 0 0 1"
+                if abs(horizontal_scale - 1.0) < 1e-6
+                else f"{horizontal_scale:.6f} 0 0 1"
+            )
             return (
                 f"{gen_op_color(color)}/{font} {size:f} Tf "
-                f"1 0 0 1 {x:f} {y:f} Tm [<{rtxt}>] TJ "
+                f"{text_matrix} {x:f} {y:f} Tm [<{rtxt}>] TJ "
             )
 
         def gen_op_line(
             x: float, y: float, xlen: float, ylen: float, linewidth: float
         ) -> str:
             return f"ET q 1 0 0 1 {x:f} {y:f} cm [] 0 d 0 J {linewidth:f} w 0 0 m {xlen:f} {ylen:f} l S Q BT "
+
+        def font_and_advance_at(ch: str, font_size: float) -> tuple[str, float]:
+            font_name: Optional[str] = None
+            if self.noto_name:
+                try:
+                    if (
+                        self.noto is None
+                        or not hasattr(self.noto, "has_glyph")
+                        or self.noto.has_glyph(ord(ch))
+                    ):
+                        font_name = self.noto_name
+                except Exception:
+                    font_name = self.noto_name
+            if font_name is None:
+                try:
+                    if (
+                        "tiro" in self.fontmap
+                        and self.fontmap["tiro"].to_unichr(ord(ch)) == ch
+                    ):
+                        font_name = "tiro"
+                except Exception:
+                    pass
+            if font_name is None:
+                font_name = self.noto_name or "tiro"
+
+            if font_name == self.noto_name:
+                if self.noto is not None and hasattr(self.noto, "char_lengths"):
+                    advance = self.noto.char_lengths(ch, font_size)[0]
+                else:
+                    advance = font_size * 0.5
+            elif font_name in self.fontmap and hasattr(
+                self.fontmap[font_name], "char_width"
+            ):
+                advance = self.fontmap[font_name].char_width(ord(ch)) * font_size
+            else:
+                advance = font_size * 0.5
+            return font_name, advance
+
+        def text_width(text: str, font_size: float) -> float:
+            return sum(font_and_advance_at(ch, font_size)[1] for ch in text)
+
+        def append_text_runs(
+            text: str,
+            font_size: float,
+            start_x: float,
+            y: float,
+            color: Any,
+            horizontal_scale: float = 1.0,
+        ) -> float:
+            cursor = start_x
+            run_font: Optional[str] = None
+            run_chars: List[str] = []
+            run_width = 0.0
+
+            def flush_run() -> None:
+                nonlocal cursor, run_font, run_chars, run_width
+                if not run_chars or run_font is None:
+                    return
+                chars = "".join(run_chars)
+                ops_list.append(
+                    gen_op_txt(
+                        run_font,
+                        font_size,
+                        cursor,
+                        y,
+                        raw_string(run_font, chars),
+                        color,
+                        horizontal_scale,
+                    )
+                )
+                cursor += run_width * horizontal_scale
+                run_chars = []
+                run_width = 0.0
+
+            for ch in text:
+                font_name, advance = font_and_advance_at(ch, font_size)
+                if run_font is not None and font_name != run_font:
+                    flush_run()
+                run_font = font_name
+                run_chars.append(ch)
+                run_width += advance
+            flush_run()
+            return cursor
 
         for id, new in enumerate(news):
             if id >= len(pstk):
@@ -568,44 +695,66 @@ class TranslateConverter(PDFConverterEx):
             ptr: int = 0
             paragraph_color = pstk[id].color
 
+            toc_page_number = pstk[id].toc_page_number
+            if toc_page_number is not None:
+                label = " ".join(new.split()) or translation_sources[id].strip()
+                gap = max(2.0, size * 0.35)
+                page_width = text_width(toc_page_number, size)
+                dot_width = max(text_width(".", size), 0.1)
+                page_x = max(x, x1 - page_width)
+                minimum_leader_width = dot_width * 3
+                available_label_width = max(
+                    size,
+                    page_x - x - (2 * gap) - minimum_leader_width,
+                )
+
+                label_size = size
+                label_width = text_width(label, label_size)
+                if label_width > available_label_width:
+                    label_size = max(
+                        size * 0.7,
+                        size * available_label_width / max(label_width, 0.1),
+                    )
+                    label_width = text_width(label, label_size)
+                label_scale = min(
+                    1.0,
+                    available_label_width / max(label_width, 0.1),
+                )
+
+                label_end = append_text_runs(
+                    label,
+                    label_size,
+                    x,
+                    y,
+                    paragraph_color,
+                    label_scale,
+                )
+                leader_start = label_end + gap
+                leader_end = page_x - gap
+                leader_count = max(
+                    3,
+                    int((leader_end - leader_start) / dot_width),
+                )
+                append_text_runs(
+                    "." * leader_count,
+                    size,
+                    leader_start,
+                    y,
+                    paragraph_color,
+                )
+                append_text_runs(
+                    toc_page_number,
+                    size,
+                    page_x,
+                    y,
+                    paragraph_color,
+                )
+                continue
+
             ops_vals: List[dict] = []
 
             def font_and_advance(ch: str) -> tuple[str, float]:
-                font_name: Optional[str] = None
-                if self.noto_name:
-                    try:
-                        if (
-                            self.noto is None
-                            or not hasattr(self.noto, "has_glyph")
-                            or self.noto.has_glyph(ord(ch))
-                        ):
-                            font_name = self.noto_name
-                    except Exception:
-                        font_name = self.noto_name
-                if font_name is None:
-                    try:
-                        if (
-                            "tiro" in self.fontmap
-                            and self.fontmap["tiro"].to_unichr(ord(ch)) == ch
-                        ):
-                            font_name = "tiro"
-                    except Exception:
-                        pass
-                if font_name is None:
-                    font_name = self.noto_name or "tiro"
-
-                if font_name == self.noto_name:
-                    if self.noto is not None and hasattr(self.noto, "char_lengths"):
-                        advance = self.noto.char_lengths(ch, size)[0]
-                    else:
-                        advance = size * 0.5
-                elif font_name in self.fontmap and hasattr(
-                    self.fontmap[font_name], "char_width"
-                ):
-                    advance = self.fontmap[font_name].char_width(ord(ch)) * size
-                else:
-                    advance = size * 0.5
-                return font_name, advance
+                return font_and_advance_at(ch, size)
 
             def measure_word(start: int) -> float:
                 end = start
@@ -810,6 +959,56 @@ class TranslateConverter(PDFConverterEx):
         return ops
 
 
+def refine_toc_row_layout(page: Any, layout: np.ndarray) -> np.ndarray:
+    """Give each dotted-leader TOC row its own paragraph class."""
+    height, width = layout.shape
+    try:
+        page_dict = page.get_text("dict")
+        page_rect = page.rect
+        scale_x = width / max(float(page_rect.width), 1.0)
+        scale_y = height / max(float(page_rect.height), 1.0)
+    except Exception as exc:
+        log.warning("Could not refine table-of-contents rows: %s", exc)
+        return layout
+
+    next_class = max(2, int(np.max(layout)) + 1)
+    for block in page_dict.get("blocks", []):
+        if block.get("type", 0) != 0:
+            continue
+        for line in block.get("lines", []):
+            spans = [
+                span
+                for span in line.get("spans", [])
+                if str(span.get("text", "")).strip()
+            ]
+            if not spans:
+                continue
+            line_text = "".join(str(span.get("text", "")) for span in spans)
+            if split_toc_entry(line_text) is None:
+                continue
+
+            x0 = min(float(span["bbox"][0]) for span in spans)
+            y0 = min(float(span["bbox"][1]) for span in spans)
+            x1 = max(float(span["bbox"][2]) for span in spans)
+            y1 = max(float(span["bbox"][3]) for span in spans)
+            pixel_x0 = (x0 - float(page_rect.x0)) * scale_x
+            pixel_x1 = (x1 - float(page_rect.x0)) * scale_x
+            pixel_y0 = (y0 - float(page_rect.y0)) * scale_y
+            pixel_y1 = (y1 - float(page_rect.y0)) * scale_y
+
+            left = int(np.clip(np.floor(pixel_x0 - 1), 0, width - 1))
+            right = int(np.clip(np.ceil(pixel_x1 + 1), 1, width))
+            bottom = int(np.clip(np.floor(height - pixel_y1), 0, height - 1))
+            top = int(np.clip(np.ceil(height - pixel_y0), 1, height))
+            if right <= left or top <= bottom:
+                continue
+
+            layout[bottom:top, left:right] = next_class
+            next_class += 1
+
+    return layout
+
+
 def build_text_block_layout(page: Any, height: int, width: int) -> np.ndarray:
     """Build a safe layout mask from non-empty PyMuPDF text blocks.
 
@@ -862,7 +1061,7 @@ def build_text_block_layout(page: Any, height: int, width: int) -> np.ndarray:
         layout[bottom:top, left:right] = next_class
         next_class += 1
 
-    return layout
+    return refine_toc_row_layout(page, layout)
 
 
 def build_page_layout(page: Any, pix: Any, model: Optional[Any]) -> np.ndarray:
@@ -923,7 +1122,7 @@ def build_page_layout(page: Any, pix: Any, model: Optional[Any]) -> np.ndarray:
             x0, y0, x1, y1 = clipped_box(item)
             layout[y0:y1, x0:x1] = 0
 
-    return layout
+    return refine_toc_row_layout(page, layout)
 
 
 def patch_page(
