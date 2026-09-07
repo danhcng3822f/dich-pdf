@@ -11,6 +11,7 @@ from app.services.pdf2zh_engine.adapter import (
     BaseTranslator,
     GoogleFreeTranslator,
     BingFreeTranslator,
+    FreeTranslationError,
     LLMTranslator,
     PDF2ZHAdapter,
     create_translator,
@@ -33,6 +34,24 @@ class DummyTranslator(BaseTranslator):
 def _google_html(text: str) -> str:
     """Return the small HTML fragment used by the keyless Google endpoint."""
     return f'<div class="result-container">{html.escape(text)}</div>'
+
+
+def _poisoned_css_error_page() -> str:
+    """CSS text observed when a provider returns a browser error document."""
+    return (
+        "body{overflow:auto!important;display:block!important;}"
+        "body>*{display:none!important;}"
+        "#af-error-page{display:block!important;}"
+    )
+
+
+def _poisoned_html_error_page() -> str:
+    """HTML wrapper variant of the same non-translation response."""
+    return (
+        "<!doctype html><html><head><style>"
+        f"{_poisoned_css_error_page()}"
+        "</style></head><body>Service unavailable</body></html>"
+    )
 
 
 def _successful_response(*, text: str = "", json_data=None) -> MagicMock:
@@ -409,6 +428,166 @@ def test_bing_free_falls_back_once_after_retries_are_exhausted():
 
     assert translated == "Google fallback {v0}"
     assert mock_post.call_count == 3
+    mock_fallback.assert_called_once_with(source)
+
+
+def test_google_rejects_html_css_error_page_and_uses_bing_fallback():
+    source = "Insights and Recommendations {v1}"
+    poisoned_response = _successful_response(
+        text=_google_html(f"{_poisoned_css_error_page()} {{v1}}")
+    )
+
+    with patch.object(
+        httpx.Client, "get", return_value=poisoned_response
+    ), patch.object(
+        BingFreeTranslator,
+        "do_translate",
+        return_value="Thông tin chuyên sâu và khuyến nghị {v1}",
+    ) as mock_fallback:
+        translated = GoogleFreeTranslator(
+            lang_out="vi", max_retries=0
+        ).translate(source)
+
+    assert translated == "Thông tin chuyên sâu và khuyến nghị {v1}"
+    assert "overflow" not in translated
+    assert "<html" not in translated.lower()
+    mock_fallback.assert_called_once_with(source)
+
+
+def test_bing_rejects_html_css_error_page_and_uses_google_fallback():
+    source = "Insights and Recommendations"
+    poisoned_response = _successful_response(
+        json_data=[
+            {"translations": [{"text": _poisoned_html_error_page()}]}
+        ]
+    )
+
+    with patch.object(
+        BingFreeTranslator,
+        "find_sid",
+        return_value=("https://www.bing.com/", "ig", "iid", "key", "token"),
+    ), patch.object(
+        httpx.Client, "post", return_value=poisoned_response
+    ), patch.object(
+        GoogleFreeTranslator,
+        "do_translate",
+        return_value="Thông tin chuyên sâu và khuyến nghị",
+    ) as mock_fallback:
+        translated = BingFreeTranslator(
+            lang_out="vi", max_retries=0
+        ).translate(source)
+
+    assert translated == "Thông tin chuyên sâu và khuyến nghị"
+    assert "display:none" not in translated
+    assert "<style" not in translated.lower()
+    mock_fallback.assert_called_once_with(source)
+
+
+@pytest.mark.parametrize("service", ["google", "bing"])
+def test_free_translator_preserves_source_when_both_providers_reject_error_pages(
+    service,
+):
+    source = "Keep the original document text when free translation is unavailable."
+
+    if service == "google":
+        primary_context = patch.object(
+            httpx.Client,
+            "get",
+            return_value=_successful_response(
+                text=_google_html(_poisoned_css_error_page())
+            ),
+        )
+        fallback_context = patch.object(
+            BingFreeTranslator,
+            "do_translate",
+            side_effect=FreeTranslationError("Bing rejected an error page"),
+        )
+        session_context = nullcontext()
+        translator = GoogleFreeTranslator(lang_out="vi", max_retries=0)
+    else:
+        primary_context = patch.object(
+            httpx.Client,
+            "post",
+            return_value=_successful_response(
+                json_data=[
+                    {"translations": [{"text": _poisoned_html_error_page()}]}
+                ]
+            ),
+        )
+        fallback_context = patch.object(
+            GoogleFreeTranslator,
+            "do_translate",
+            side_effect=FreeTranslationError("Google rejected an error page"),
+        )
+        session_context = patch.object(
+            BingFreeTranslator,
+            "find_sid",
+            return_value=(
+                "https://www.bing.com/",
+                "ig",
+                "iid",
+                "key",
+                "token",
+            ),
+        )
+        translator = BingFreeTranslator(lang_out="vi", max_retries=0)
+
+    with session_context, primary_context, fallback_context:
+        translated = translator.translate(source)
+
+    assert translated == source
+    assert "overflow:auto" not in translated
+    assert "<html" not in translated.lower()
+
+
+def test_google_allows_css_signatures_that_are_already_in_the_source():
+    css = (
+        "body{overflow:auto!important;display:block!important;}"
+        "body>*{display:none!important;}"
+    )
+    source = f"Explain this CSS rule: {css}"
+    expected = f"Giải thích quy tắc CSS này: {css}"
+
+    with patch.object(
+        httpx.Client,
+        "get",
+        return_value=_successful_response(text=_google_html(expected)),
+    ), patch.object(
+        BingFreeTranslator,
+        "do_translate",
+        side_effect=AssertionError("legitimate CSS must not trigger fallback"),
+    ) as mock_fallback:
+        translated = GoogleFreeTranslator(
+            lang_out="vi", max_retries=0
+        ).translate(source)
+
+    assert translated == expected
+    mock_fallback.assert_not_called()
+
+
+def test_rejected_google_result_is_not_cached_and_a_later_call_can_recover():
+    source = "Insights and Recommendations {v1}"
+    poisoned = _successful_response(
+        text=_google_html(f"{_poisoned_css_error_page()} {{v1}}")
+    )
+    recovered = _successful_response(
+        text=_google_html("Thông tin chuyên sâu và khuyến nghị {v1}")
+    )
+
+    with patch.object(
+        httpx.Client, "get", side_effect=[poisoned, recovered]
+    ) as mock_get, patch.object(
+        BingFreeTranslator,
+        "do_translate",
+        side_effect=FreeTranslationError("Bing is temporarily unavailable"),
+    ) as mock_fallback:
+        translator = GoogleFreeTranslator(lang_out="vi", max_retries=0)
+        first_result = translator.translate(source)
+        second_result = translator.translate(source)
+
+    assert first_result == source
+    assert second_result == "Thông tin chuyên sâu và khuyến nghị {v1}"
+    assert mock_get.call_count == 2
     mock_fallback.assert_called_once_with(source)
 
 

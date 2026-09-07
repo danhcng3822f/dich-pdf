@@ -20,6 +20,25 @@ _SYSTEM_SSL_CONTEXT = ssl.create_default_context()
 
 _FORMULA_TOKEN_RE = re.compile(r"\{\s*[vV]\s*\d+\s*\}")
 _RETRYABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
+_ERROR_PAGE_COMPACT_MARKERS = (
+    "<!doctypehtml",
+    "<html",
+    "<head",
+    "<body",
+    "<style",
+    "<script",
+    "#af-error-page",
+    "body>*{display:none!important",
+    "body{overflow:auto!important",
+    "cf-chl-",
+    "g-recaptcha",
+)
+_ERROR_PAGE_PHRASES = (
+    "our systems have detected unusual traffic",
+    "unusual traffic from your computer network",
+    "to continue, please type the characters below",
+    "please verify that you are not a robot",
+)
 
 _LANGUAGE_ALIASES = {
     "vietnamese": "vi",
@@ -68,6 +87,38 @@ _AUTO_LANGUAGE_ALIASES = {
 
 class FreeTranslationError(RuntimeError):
     """Raised when an unofficial free web translator cannot return a safe result."""
+
+
+class _PreserveSourceText(FreeTranslationError):
+    """Signal a graceful, deliberately non-cacheable source-text fallback."""
+
+
+def validate_free_translation(source: str, translated: str, provider: str) -> None:
+    """Reject browser, challenge and error documents masquerading as translations."""
+    source_unescaped = html.unescape(source).casefold()
+    translated_unescaped = html.unescape(translated).casefold()
+    source_compact = re.sub(r"\s+", "", source_unescaped)
+    translated_compact = re.sub(r"\s+", "", translated_unescaped)
+
+    for marker in _ERROR_PAGE_COMPACT_MARKERS:
+        if marker in translated_compact and marker not in source_compact:
+            raise FreeTranslationError(
+                f"{provider} returned a browser error page instead of a translation"
+            )
+
+    if (
+        translated_unescaped.count("!important") >= 2
+        and source_unescaped.count("!important") < 2
+    ):
+        raise FreeTranslationError(
+            f"{provider} returned error-page CSS instead of a translation"
+        )
+
+    for phrase in _ERROR_PAGE_PHRASES:
+        if phrase in translated_unescaped and phrase not in source_unescaped:
+            raise FreeTranslationError(
+                f"{provider} returned a web challenge instead of a translation"
+            )
 
 
 def normalize_language_code(language: str, provider: str, *, source: bool) -> str:
@@ -156,12 +207,22 @@ class _GoogleResultParser(HTMLParser):
         super().__init__(convert_charrefs=True)
         self._capture_depth = 0
         self._finished = False
+        self.unsafe_markup = False
         self.parts: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
         if self._finished:
             return
         if self._capture_depth:
+            if tag.lower() in {
+                "body",
+                "head",
+                "html",
+                "iframe",
+                "script",
+                "style",
+            }:
+                self.unsafe_markup = True
             if tag.lower() == "br":
                 self.parts.append("\n")
                 return
@@ -294,6 +355,14 @@ class _FreeWebTranslator(BaseTranslator):
         self.enable_fallback = enable_fallback
         self.headers: dict[str, str] = {}
 
+    def translate(self, text: str) -> str:
+        try:
+            return super().translate(text)
+        except _PreserveSourceText:
+            # Do not cache this result: a later paragraph or retry may recover
+            # after the upstream rate limit / challenge page has cleared.
+            return normalize_tokens(text)
+
     @staticmethod
     def _is_retryable(exc: Exception) -> bool:
         if isinstance(exc, httpx.HTTPStatusError):
@@ -373,6 +442,7 @@ class _FreeWebTranslator(BaseTranslator):
                 raise FreeTranslationError(
                     f"{self.name} returned an empty translation"
                 )
+            validate_free_translation(core, translated, self.name)
 
             expected_tokens = [
                 normalize_tokens(token) for token in _FORMULA_TOKEN_RE.findall(core)
@@ -428,6 +498,10 @@ class GoogleFreeTranslator(_FreeWebTranslator):
     def _parse_result(response_text: str) -> str:
         parser = _GoogleResultParser()
         parser.feed(response_text)
+        if parser.unsafe_markup:
+            raise FreeTranslationError(
+                "Google result container included unsafe page markup"
+            )
         if parser.result:
             return parser.result
 
@@ -478,7 +552,15 @@ class GoogleFreeTranslator(_FreeWebTranslator):
                 retry_backoff=self.retry_backoff,
                 enable_fallback=False,
             )
-            return fallback.do_translate(text)
+            try:
+                return fallback.do_translate(text)
+            except Exception as fallback_exc:
+                logger.warning(
+                    "Google and Bing free translators both failed; preserving "
+                    "the source text: %s",
+                    self._error_label(fallback_exc),
+                )
+                raise _PreserveSourceText from None
 
 
 class BingFreeTranslator(_FreeWebTranslator):
@@ -658,7 +740,15 @@ class BingFreeTranslator(_FreeWebTranslator):
                 retry_backoff=self.retry_backoff,
                 enable_fallback=False,
             )
-            return fallback.do_translate(text)
+            try:
+                return fallback.do_translate(text)
+            except Exception as fallback_exc:
+                logger.warning(
+                    "Bing and Google free translators both failed; preserving "
+                    "the source text: %s",
+                    self._error_label(fallback_exc),
+                )
+                raise _PreserveSourceText from None
 
 
 def build_llm_system_prompt(target_lang: str, custom_prompt: Optional[str] = None) -> str:
