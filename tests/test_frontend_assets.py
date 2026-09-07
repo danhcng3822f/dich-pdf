@@ -25,6 +25,11 @@ def test_index_page_returns_html():
     assert "Bing Dịch (Miễn phí, không cần API Key)" in html
     assert "Không cần API Key" in html
 
+    # Free translators can auto-detect or use an explicit source language.
+    assert 'id="source-lang-select"' in html
+    assert 'value="auto"' in html
+    assert "Tự động nhận diện" in html
+
     # Verify Export buttons
     assert 'id="download-docx-btn"' in html
     assert 'id="download-pdf-btn"' in html
@@ -63,3 +68,4 @@ def test_static_app_js_accessible():
     assert "beamer_slide" in js
     assert "download-dual-btn" in js
     assert "dual_ready" in js
+    assert "source_lang" in js

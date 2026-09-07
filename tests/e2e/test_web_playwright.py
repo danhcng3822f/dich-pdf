@@ -102,6 +102,15 @@ def test_settings_modal_free_providers(page: Page):
     - Clicks #test-settings-btn, verifies connection test passes or shows success message.
     - Clicks #save-settings-btn, modal closes.
     """
+    # UI behavior is deterministic; endpoint availability is covered by opt-in live tests.
+    page.route(
+        "**/api/test-connection",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body='{"status":"success","sample_translation":"Xin chào"}',
+        ),
+    )
     page.goto(f"{BASE_URL}/")
 
     # Clicks #settings-btn

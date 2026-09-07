@@ -25,6 +25,7 @@ JOB_STORE: dict[str, dict] = {}
 
 class TranslationStreamRequest(BaseModel):
     file_id: str
+    source_lang: str = "auto"
     target_lang: str = "Vietnamese"
     style: str = "Default"
     page_range: str = "all"
@@ -110,6 +111,7 @@ async def translate_stream(req: TranslationStreamRequest):
                 translator = create_translator(
                     provider=req.ai_config.provider,
                     target_lang=req.target_lang,
+                    source_lang=req.source_lang,
                     api_key=req.ai_config.api_key or "",
                     model=req.ai_config.model or "",
                     base_url=req.ai_config.base_url or "",
@@ -193,7 +195,8 @@ async def translate_stream(req: TranslationStreamRequest):
                             raw_text,
                             target_lang=req.target_lang,
                             style=req.style,
-                            config=req.ai_config
+                            config=req.ai_config,
+                            source_lang=req.source_lang,
                         )
                     else:
                         translated_text = "[Trang không có nội dung chữ hoặc là trang ảnh]"

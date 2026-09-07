@@ -42,6 +42,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const fileMetaSpan = document.getElementById("file-meta");
     const removeFileBtn = document.getElementById("remove-file-btn");
 
+    const sourceLangSelect = document.getElementById("source-lang-select");
     const targetLangSelect = document.getElementById("target-lang-select");
     const styleSelect = document.getElementById("style-select");
     const pageRangeInput = document.getElementById("page-range-input");
@@ -88,7 +89,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (isFree) {
             apiKeyInput.placeholder = "(Không cần API Key cho Google / Bing)";
             if (apiKeyHint) {
-                apiKeyHint.textContent = "Google Dịch & Bing Dịch hoàn toàn miễn phí, không yêu cầu API Key.";
+                apiKeyHint.textContent = "Không cần API Key; khi dịch vụ đã chọn tạm lỗi, hệ thống sẽ thử dịch vụ miễn phí còn lại.";
             }
             modelInput.placeholder = "(Mặc định)";
         } else {
@@ -152,7 +153,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const apiKey = apiKeyInput.value.trim();
 
         if (!isFree && !apiKey) {
-            testStatus.innerHTML = `<span class="text-rose-500 font-medium">Vui lòng nhập API Key cho nhà cung cấp này</span>`;
+            setTestStatus("Vui lòng nhập API Key cho nhà cung cấp này", "text-rose-500 font-medium");
             return;
         }
 
@@ -165,14 +166,22 @@ document.addEventListener("DOMContentLoaded", () => {
             temperature: parseFloat(tempInput.value)
         };
 
-        testStatus.innerHTML = `<span class="text-blue-500 animate-pulse">Đang kết nối thử nghiệm...</span>`;
+        setTestStatus("Đang kết nối thử nghiệm...", "text-blue-500 animate-pulse");
         try {
             const res = await window.API.testConnection(testConfig);
-            testStatus.innerHTML = `<span class="text-emerald-600 font-medium">✓ Kết nối thành công! (Dịch thử: "${res.sample_translation}")</span>`;
+            setTestStatus(`✓ Kết nối thành công! (Dịch thử: "${res.sample_translation}")`, "text-emerald-600 font-medium");
         } catch (err) {
-            testStatus.innerHTML = `<span class="text-rose-500 font-medium">✗ Lỗi: ${err.message}</span>`;
+            setTestStatus(`✗ Lỗi: ${err.message}`, "text-rose-500 font-medium");
         }
     });
+
+    function setTestStatus(message, className) {
+        testStatus.textContent = "";
+        const status = document.createElement("span");
+        status.className = className;
+        status.textContent = message;
+        testStatus.appendChild(status);
+    }
 
     // --- Engine Mode Switcher Logic ---
     function setEngineMode(mode) {
@@ -313,6 +322,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
         const payload = {
             file_id: currentUploadedFile.file_id,
+            source_lang: sourceLangSelect.value,
             target_lang: targetLangSelect.value,
             style: styleSelect.value,
             page_range: pageRangeInput.value.trim() || "all",
@@ -627,7 +637,9 @@ document.addEventListener("DOMContentLoaded", () => {
             info: "bg-slate-800"
         };
         toast.className = `fixed bottom-5 right-5 z-50 text-white text-sm font-medium px-4 py-3 rounded-xl shadow-lg flex items-center space-x-2 transition-all transform duration-300 translate-y-3 ${bgColors[type] || bgColors.info}`;
-        toast.innerHTML = `<span>${msg}</span>`;
+        const message = document.createElement("span");
+        message.textContent = msg;
+        toast.appendChild(message);
 
         document.body.appendChild(toast);
         setTimeout(() => toast.classList.remove("translate-y-3"), 10);

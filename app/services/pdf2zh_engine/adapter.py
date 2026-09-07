@@ -1,13 +1,204 @@
 import html
 import logging
 import re
+import ssl
+import threading
+import time
 import unicodedata
-from typing import Any, Optional
+from html.parser import HTMLParser
+from typing import Any, Callable, Optional, TypeVar
+from urllib.parse import urlparse
+
 import httpx
 
 from app.services.ai_service import AIConfig
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+_SYSTEM_SSL_CONTEXT = ssl.create_default_context()
+
+_FORMULA_TOKEN_RE = re.compile(r"\{\s*[vV]\s*\d+\s*\}")
+_RETRYABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
+
+_LANGUAGE_ALIASES = {
+    "vietnamese": "vi",
+    "tiếng việt": "vi",
+    "english": "en",
+    "japanese": "ja",
+    "chinese": "zh",
+    "simplified chinese": "zh-hans",
+    "traditional chinese": "zh-hant",
+    "korean": "ko",
+    "french": "fr",
+    "german": "de",
+    "spanish": "es",
+    "russian": "ru",
+    "portuguese": "pt",
+    "italian": "it",
+    "dutch": "nl",
+    "polish": "pl",
+    "ukrainian": "uk",
+    "thai": "th",
+    "indonesian": "id",
+    "malay": "ms",
+    "arabic": "ar",
+    "hindi": "hi",
+    "turkish": "tr",
+    "swedish": "sv",
+    "norwegian": "no",
+    "danish": "da",
+    "finnish": "fi",
+    "czech": "cs",
+    "romanian": "ro",
+    "hungarian": "hu",
+    "greek": "el",
+    "hebrew": "he",
+}
+
+_AUTO_LANGUAGE_ALIASES = {
+    "",
+    "auto",
+    "auto-detect",
+    "detect",
+    "detect language",
+    "automatic",
+}
+
+
+class FreeTranslationError(RuntimeError):
+    """Raised when an unofficial free web translator cannot return a safe result."""
+
+
+def normalize_language_code(language: str, provider: str, *, source: bool) -> str:
+    """Normalize UI language names to the codes expected by Google/Bing web UIs."""
+    raw = (language or "").strip()
+    key = raw.lower().replace("_", "-")
+
+    if key in _AUTO_LANGUAGE_ALIASES:
+        if not source:
+            raise ValueError("Target language cannot use automatic detection")
+        return "auto-detect" if provider == "bing" else "auto"
+
+    code = _LANGUAGE_ALIASES.get(key, key)
+    if key not in _LANGUAGE_ALIASES and not re.fullmatch(
+        r"[a-z]{2,3}(?:-[a-z0-9]{2,8})?", key
+    ):
+        raise ValueError(f"Unsupported language for free translation: {raw}")
+    if provider == "bing":
+        if code in {"zh", "zh-cn", "zh-hans"}:
+            return "zh-Hans"
+        if code in {"zh-tw", "zh-hant"}:
+            return "zh-Hant"
+    else:
+        if code in {"zh", "zh-cn", "zh-hans"}:
+            return "zh-CN"
+        if code in {"zh-tw", "zh-hant"}:
+            return "zh-TW"
+
+    return code
+
+
+def split_translation_chunks(text: str, max_chars: int) -> list[str]:
+    """Split text without dropping characters or cutting through formula markers."""
+    if max_chars < 32:
+        raise ValueError("max_chars must be at least 32")
+    if len(text) <= max_chars:
+        return [text]
+
+    chunks: list[str] = []
+    start = 0
+    text_len = len(text)
+    preferred_boundaries = re.compile(
+        r"\n{2,}|\n|(?<=[.!?。！？])\s+|(?<=[;:；：])\s+|,\s+|\s+"
+    )
+
+    while start < text_len:
+        proposed = min(start + max_chars, text_len)
+        if proposed == text_len:
+            chunks.append(text[start:])
+            break
+
+        window = text[start:proposed]
+        matches = list(preferred_boundaries.finditer(window))
+        cut = proposed
+        minimum_preferred = max(1, max_chars // 3)
+        for match in reversed(matches):
+            candidate = start + match.end()
+            if candidate - start >= minimum_preferred:
+                cut = candidate
+                break
+
+        # A hard cut must never split a PDF2ZH formula placeholder such as {v12}.
+        token_window_start = max(start, cut - 32)
+        token_window_end = min(text_len, cut + 32)
+        for token_match in _FORMULA_TOKEN_RE.finditer(
+            text[token_window_start:token_window_end]
+        ):
+            token_start = token_window_start + token_match.start()
+            token_end = token_window_start + token_match.end()
+            if token_start < cut < token_end:
+                cut = token_start if token_start > start else token_end
+                break
+
+        if cut <= start:
+            cut = min(start + max_chars, text_len)
+        chunks.append(text[start:cut])
+        start = cut
+
+    return chunks
+
+
+class _GoogleResultParser(HTMLParser):
+    """Extract the translated result while tolerating nested markup changes."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._capture_depth = 0
+        self._finished = False
+        self.parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+        if self._finished:
+            return
+        if self._capture_depth:
+            if tag.lower() == "br":
+                self.parts.append("\n")
+                return
+            if tag.lower() in {
+                "area",
+                "base",
+                "embed",
+                "hr",
+                "img",
+                "input",
+                "link",
+                "meta",
+                "source",
+                "wbr",
+            }:
+                return
+            self._capture_depth += 1
+            return
+        classes = dict(attrs).get("class") or ""
+        class_names = set(classes.split())
+        if {"result-container", "t0"} & class_names:
+            self._capture_depth = 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if not self._capture_depth:
+            return
+        self._capture_depth -= 1
+        if self._capture_depth == 0:
+            self._finished = True
+
+    def handle_data(self, data: str) -> None:
+        if self._capture_depth:
+            self.parts.append(data)
+
+    @property
+    def result(self) -> str:
+        return "".join(self.parts).strip()
 
 
 def remove_control_characters(s: str) -> str:
@@ -77,131 +268,396 @@ class BaseTranslator:
         self._cache.clear()
 
 
-class GoogleFreeTranslator(BaseTranslator):
-    """Free Google Translate web API without requiring an API key."""
+class _FreeWebTranslator(BaseTranslator):
+    """Shared resilience, chunking and placeholder validation for free web UIs."""
+
+    handles_retries = True
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        lang_in: str,
+        lang_out: str,
+        timeout: float,
+        max_chars: int,
+        max_retries: int,
+        retry_backoff: float,
+        enable_fallback: bool,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(name=name, lang_in=lang_in, lang_out=lang_out, **kwargs)
+        self.timeout = timeout
+        self.max_chars = max_chars
+        self.max_retries = max(0, max_retries)
+        self.retry_backoff = max(0.0, retry_backoff)
+        self.enable_fallback = enable_fallback
+        self.headers: dict[str, str] = {}
+
+    @staticmethod
+    def _is_retryable(exc: Exception) -> bool:
+        if isinstance(exc, httpx.HTTPStatusError):
+            return exc.response.status_code in _RETRYABLE_STATUS_CODES
+        return isinstance(exc, (httpx.TransportError, FreeTranslationError))
+
+    @staticmethod
+    def _error_label(exc: Exception) -> str:
+        """Describe failures without logging request URLs or document text."""
+        if isinstance(exc, httpx.HTTPStatusError):
+            return f"HTTP {exc.response.status_code}"
+        return type(exc).__name__
+
+    def _can_bypass(self, text: str) -> bool:
+        if (
+            self.lang_in not in {"auto", "auto-detect"}
+            and self.lang_in == self.lang_out
+        ):
+            return True
+        without_tokens = _FORMULA_TOKEN_RE.sub("", text)
+        return not any(char.isalpha() for char in without_tokens)
+
+    def _create_client(self) -> httpx.Client:
+        """Use the OS trust store while keeping full TLS certificate verification."""
+        return httpx.Client(
+            headers=self.headers,
+            timeout=self.timeout,
+            follow_redirects=True,
+            verify=_SYSTEM_SSL_CONTEXT,
+        )
+
+    def _with_retry(self, operation: Callable[[], T]) -> T:
+        last_error: Optional[Exception] = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                return operation()
+            except Exception as exc:
+                last_error = exc
+                if attempt >= self.max_retries or not self._is_retryable(exc):
+                    raise
+                delay = self.retry_backoff * (2**attempt)
+                if isinstance(exc, httpx.HTTPStatusError):
+                    retry_after = exc.response.headers.get("Retry-After", "")
+                    try:
+                        delay = max(delay, min(float(retry_after), 5.0))
+                    except (TypeError, ValueError):
+                        pass
+                logger.warning(
+                    "%s free translator attempt %s failed; retrying in %.2fs: %s",
+                    self.name,
+                    attempt + 1,
+                    delay,
+                    self._error_label(exc),
+                )
+                if delay:
+                    time.sleep(delay)
+        raise FreeTranslationError(f"{self.name} translation failed") from last_error
+
+    def _translate_all(
+        self, text: str, translate_chunk: Callable[[str], str]
+    ) -> str:
+        translated_chunks: list[str] = []
+        for chunk in split_translation_chunks(text, self.max_chars):
+            leading_len = len(chunk) - len(chunk.lstrip())
+            trailing_len = len(chunk) - len(chunk.rstrip())
+            core_end = len(chunk) - trailing_len if trailing_len else len(chunk)
+            leading = chunk[:leading_len]
+            core = chunk[leading_len:core_end]
+            trailing = chunk[core_end:]
+
+            if not core:
+                translated_chunks.append(chunk)
+                continue
+
+            translated = normalize_tokens(translate_chunk(core)).strip()
+            if not translated:
+                raise FreeTranslationError(
+                    f"{self.name} returned an empty translation"
+                )
+
+            expected_tokens = [
+                normalize_tokens(token) for token in _FORMULA_TOKEN_RE.findall(core)
+            ]
+            actual_tokens = _FORMULA_TOKEN_RE.findall(translated)
+            if expected_tokens != actual_tokens:
+                raise FreeTranslationError(
+                    f"{self.name} changed PDF formula placeholders"
+                )
+            translated_chunks.append(f"{leading}{translated}{trailing}")
+
+        return remove_control_characters("".join(translated_chunks))
+
+
+class GoogleFreeTranslator(_FreeWebTranslator):
+    """Unofficial Google Translate web client with chunking and Bing fallback."""
 
     name: str = "google"
-    lang_map: dict[str, str] = {
-        "zh": "zh-CN",
-        "zh-cn": "zh-CN",
-        "zh-tw": "zh-TW",
-        "zh-hans": "zh-CN",
-        "zh-hant": "zh-TW",
-        "vietnamese": "vi",
-        "vi": "vi",
-        "english": "en",
-        "en": "en",
-    }
 
     def __init__(
         self,
-        lang_in: str = "en",
+        lang_in: str = "auto",
         lang_out: str = "vi",
         timeout: float = 15.0,
+        max_chars: int = 1800,
+        max_retries: int = 2,
+        retry_backoff: float = 0.25,
+        enable_fallback: bool = True,
         **kwargs: Any,
-    ):
-        in_code = self.lang_map.get(lang_in.lower(), lang_in)
-        out_code = self.lang_map.get(lang_out.lower(), lang_out)
-        super().__init__(name="google", lang_in=in_code, lang_out=out_code, **kwargs)
+    ) -> None:
+        super().__init__(
+            name="google",
+            lang_in=normalize_language_code(lang_in, "google", source=True),
+            lang_out=normalize_language_code(lang_out, "google", source=False),
+            timeout=timeout,
+            max_chars=max_chars,
+            max_retries=max_retries,
+            retry_backoff=retry_backoff,
+            enable_fallback=enable_fallback,
+            **kwargs,
+        )
         self.endpoint = "https://translate.google.com/m"
         self.headers = {
-            "User-Agent": "Mozilla/4.0 (compatible;MSIE 6.0;Windows NT 5.1;SV1;.NET CLR 1.1.4322;.NET CLR 2.0.50727;.NET CLR 3.0.04506.30)"
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/131.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
         }
-        self.timeout = timeout
+
+    @staticmethod
+    def _parse_result(response_text: str) -> str:
+        parser = _GoogleResultParser()
+        parser.feed(response_text)
+        if parser.result:
+            return parser.result
+
+        # Compatibility fallback for small historical variations of the mobile page.
+        match = re.search(
+            r'class=["\'][^"\']*(?:t0|result-container)[^"\']*["\'][^>]*>'
+            r'(.*?)</(?:div|span)>',
+            response_text,
+            re.DOTALL | re.IGNORECASE,
+        )
+        if match:
+            return html.unescape(re.sub(r"<[^>]+>", "", match.group(1))).strip()
+        raise FreeTranslationError("Google response did not contain a translation")
+
+    def _translate_chunk(self, client: httpx.Client, text: str) -> str:
+        response = client.get(
+            self.endpoint,
+            params={"tl": self.lang_out, "sl": self.lang_in, "q": text},
+        )
+        response.raise_for_status()
+        return self._parse_result(response.text)
 
     def do_translate(self, text: str) -> str:
-        text_truncated = text[:5000]
-        with httpx.Client(headers=self.headers, timeout=self.timeout) as client:
-            response = client.get(
-                self.endpoint,
-                params={"tl": self.lang_out, "sl": self.lang_in, "q": text_truncated},
+        if self._can_bypass(text):
+            return normalize_tokens(text)
+        try:
+            with self._create_client() as client:
+                return self._translate_all(
+                    text,
+                    lambda chunk: self._with_retry(
+                        lambda: self._translate_chunk(client, chunk)
+                    ),
+                )
+        except Exception as exc:
+            if not self.enable_fallback:
+                raise FreeTranslationError(
+                    "Google free translation failed"
+                ) from None
+            logger.warning(
+                "Google free translator failed; falling back to Bing: %s",
+                self._error_label(exc),
             )
-            if response.status_code == 400:
-                logger.warning(f"Google translate 400 error for text: {text[:50]}...")
-                return text
-            response.raise_for_status()
-
-        # Extract translation from response
-        matches = re.findall(r'(?s)class="(?:t0|result-container)">(.*?)<', response.text)
-        if matches:
-            result = html.unescape(matches[0])
-        else:
-            m = re.search(r'class="[^"]*(?:t0|result-container)[^"]*"[^>]*>(.*?)</div>', response.text, re.DOTALL)
-            if m:
-                result = html.unescape(m.group(1))
-            else:
-                result = text
-
-        return remove_control_characters(result)
+            fallback = BingFreeTranslator(
+                lang_in=self.lang_in,
+                lang_out=self.lang_out,
+                timeout=self.timeout,
+                max_retries=self.max_retries,
+                retry_backoff=self.retry_backoff,
+                enable_fallback=False,
+            )
+            return fallback.do_translate(text)
 
 
-class BingFreeTranslator(BaseTranslator):
-    """Free Bing Translate web API with automatic fallback to Google."""
+class BingFreeTranslator(_FreeWebTranslator):
+    """Unofficial Bing Translate web client with session reuse and Google fallback."""
 
     name: str = "bing"
-    lang_map: dict[str, str] = {
-        "zh": "zh-Hans",
-        "zh-cn": "zh-Hans",
-        "zh-tw": "zh-Hant",
-        "zh-hans": "zh-Hans",
-        "zh-hant": "zh-Hant",
-        "vietnamese": "vi",
-        "vi": "vi",
-        "english": "en",
-        "en": "en",
-    }
 
     def __init__(
         self,
-        lang_in: str = "en",
+        lang_in: str = "auto",
         lang_out: str = "vi",
         timeout: float = 15.0,
+        max_chars: int = 950,
+        max_retries: int = 2,
+        retry_backoff: float = 0.25,
+        enable_fallback: bool = True,
+        session_ttl: float = 600.0,
         **kwargs: Any,
-    ):
-        in_code = self.lang_map.get(lang_in.lower(), lang_in)
-        out_code = self.lang_map.get(lang_out.lower(), lang_out)
-        super().__init__(name="bing", lang_in=in_code, lang_out=out_code, **kwargs)
+    ) -> None:
+        super().__init__(
+            name="bing",
+            lang_in=normalize_language_code(lang_in, "bing", source=True),
+            lang_out=normalize_language_code(lang_out, "bing", source=False),
+            timeout=timeout,
+            max_chars=max_chars,
+            max_retries=max_retries,
+            retry_backoff=retry_backoff,
+            enable_fallback=enable_fallback,
+            **kwargs,
+        )
         self.endpoint = "https://www.bing.com/translator"
         self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0"
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
         }
-        self.timeout = timeout
+        self.session_ttl = max(0.0, session_ttl)
+        self._session_credentials: Optional[tuple[str, str, str, str, str]] = None
+        self._session_expires_at = 0.0
+        self._session_lock = threading.Lock()
 
-    def find_sid(self) -> tuple[str, str, str, str, str]:
-        with httpx.Client(headers=self.headers, timeout=self.timeout) as client:
-            response = client.get(self.endpoint)
+    def find_sid(
+        self, client: Optional[httpx.Client] = None
+    ) -> tuple[str, str, str, str, str]:
+        owns_client = client is None
+        active_client = client or self._create_client()
+        try:
+            response = active_client.get(self.endpoint)
             response.raise_for_status()
+            response_text = response.text
             url_str = str(response.url)
-            url_base = url_str.rsplit("/translator", 1)[0] + "/"
-            ig = re.findall(r'\"ig\":\"(.*?)\"', response.text)[0]
-            iid = re.findall(r'data-iid=\"(.*?)\"', response.text)[-1]
-            key, token = re.findall(
-                r'params_AbusePreventionHelper\s*=\s*\[(.*?),\"(.*?)\"', response.text
-            )[0]
-            return url_base, ig, iid, key, token
+            url_base = url_str.rsplit("/translator", 1)[0].rstrip("/") + "/"
+            parsed_base = urlparse(url_base)
+            hostname = (parsed_base.hostname or "").lower()
+            if hostname != "bing.com" and not hostname.endswith(".bing.com"):
+                raise FreeTranslationError("Bing returned an unexpected translation host")
+
+            ig_match = re.search(
+                r'["\'](?:ig|IG)["\']\s*:\s*["\']([^"\']+)',
+                response_text,
+            )
+            iid_matches = re.findall(
+                r'data-iid=["\']([^"\']+)', response_text, re.IGNORECASE
+            )
+            helper_match = re.search(
+                r'params_AbusePreventionHelper\s*=\s*\[\s*([^,]+),\s*["\']([^"\']+)',
+                response_text,
+            )
+            if not ig_match or not iid_matches or not helper_match:
+                raise FreeTranslationError(
+                    "Bing translator session metadata was not found"
+                )
+
+            key = helper_match.group(1).strip().strip('"\'')
+            token = helper_match.group(2)
+            return url_base, ig_match.group(1), iid_matches[-1], key, token
+        finally:
+            if owns_client:
+                active_client.close()
+
+    def _get_session_credentials(
+        self, client: httpx.Client, *, force_refresh: bool = False
+    ) -> tuple[str, str, str, str, str]:
+        now = time.monotonic()
+        if (
+            not force_refresh
+            and self._session_credentials is not None
+            and now < self._session_expires_at
+        ):
+            return self._session_credentials
+
+        with self._session_lock:
+            now = time.monotonic()
+            if (
+                not force_refresh
+                and self._session_credentials is not None
+                and now < self._session_expires_at
+            ):
+                return self._session_credentials
+            credentials = self._with_retry(lambda: self.find_sid(client=client))
+            self._session_credentials = credentials
+            self._session_expires_at = time.monotonic() + self.session_ttl
+            return credentials
+
+    def _translate_chunk(
+        self,
+        client: httpx.Client,
+        text: str,
+        credentials: tuple[str, str, str, str, str],
+    ) -> str:
+        url_base, ig, iid, key, token = credentials
+        response = client.post(
+            f"{url_base}ttranslatev3?IG={ig}&IID={iid}",
+            data={
+                "fromLang": self.lang_in,
+                "to": self.lang_out,
+                "text": text,
+                "token": token,
+                "key": key,
+            },
+        )
+        response.raise_for_status()
+        try:
+            data = response.json()
+            result = data[0]["translations"][0]["text"]
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            raise FreeTranslationError(
+                "Bing response did not contain a translation"
+            ) from exc
+        if not isinstance(result, str):
+            raise FreeTranslationError("Bing returned a non-text translation")
+        return result
 
     def do_translate(self, text: str) -> str:
-        text_truncated = text[:1000]
+        if self._can_bypass(text):
+            return normalize_tokens(text)
         try:
-            url_base, ig, iid, key, token = self.find_sid()
-            t_url = f"{url_base}ttranslatev3?IG={ig}&IID={iid}"
-            with httpx.Client(headers=self.headers, timeout=self.timeout) as client:
-                response = client.post(
-                    t_url,
-                    data={
-                        "fromLang": self.lang_in,
-                        "to": self.lang_out,
-                        "text": text_truncated,
-                        "token": token,
-                        "key": key,
-                    },
-                )
-                response.raise_for_status()
-                data = response.json()
-                return data[0]["translations"][0]["text"]
-        except Exception as e:
-            logger.warning(f"Bing translator failed ({e}), falling back to GoogleFreeTranslator")
-            fallback = GoogleFreeTranslator(lang_in=self.lang_in, lang_out=self.lang_out, timeout=self.timeout)
+            with self._create_client() as client:
+                credentials: Optional[tuple[str, str, str, str, str]] = None
+
+                def translate_chunk(chunk: str) -> str:
+                    nonlocal credentials
+                    if credentials is None:
+                        credentials = self._get_session_credentials(client)
+                    try:
+                        return self._with_retry(
+                            lambda: self._translate_chunk(client, chunk, credentials)
+                        )
+                    except httpx.HTTPStatusError as exc:
+                        if exc.response.status_code not in {401, 403}:
+                            raise
+                        credentials = self._get_session_credentials(
+                            client, force_refresh=True
+                        )
+                        return self._with_retry(
+                            lambda: self._translate_chunk(client, chunk, credentials)
+                        )
+
+                return self._translate_all(text, translate_chunk)
+        except Exception as exc:
+            if not self.enable_fallback:
+                raise FreeTranslationError(
+                    "Bing free translation failed"
+                ) from None
+            logger.warning(
+                "Bing free translator failed; falling back to Google: %s",
+                self._error_label(exc),
+            )
+            fallback = GoogleFreeTranslator(
+                lang_in=self.lang_in,
+                lang_out=self.lang_out,
+                timeout=self.timeout,
+                max_retries=self.max_retries,
+                retry_backoff=self.retry_backoff,
+                enable_fallback=False,
+            )
             return fallback.do_translate(text)
 
 
@@ -354,7 +810,7 @@ def create_translator(
     base_url: str = "",
     custom_prompt: str = "",
     temperature: float = 0.3,
-    source_lang: str = "en",
+    source_lang: str = "auto",
 ) -> BaseTranslator:
     """
     Factory creating appropriate translator:
@@ -384,7 +840,7 @@ def create_adapter(
     api_key: str = "",
     model: str = "",
     base_url: str = "",
-    lang_in: str = "en",
+    lang_in: str = "auto",
     lang_out: str = "vi",
     custom_prompt: str = "",
     temperature: float = 0.3,

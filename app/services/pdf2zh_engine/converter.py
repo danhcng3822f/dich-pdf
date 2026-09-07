@@ -209,7 +209,7 @@ class TranslateConverter(PDFConverterEx):
             self.translator = create_translator(
                 provider=service_name,
                 target_lang=lang_out or "vi",
-                source_lang=lang_in or "en",
+                source_lang=lang_in or "auto",
                 api_key=api_key,
                 model=model,
                 base_url=base_url,
@@ -455,7 +455,6 @@ class TranslateConverter(PDFConverterEx):
             vlen.append(l)
 
         # B. Paragraph translation
-        @retry(wait=wait_fixed(1), stop=stop_after_attempt(3), reraise=True)
         def worker(s: str) -> str:
             if not s.strip() or re.match(r"^\{v\d+\}$", s.strip()):
                 return s
@@ -468,9 +467,15 @@ class TranslateConverter(PDFConverterEx):
                     log.exception(e, exc_info=False)
                 raise e
 
+        translate_worker = worker
+        if not getattr(self.translator, "handles_retries", False):
+            translate_worker = retry(
+                wait=wait_fixed(1), stop=stop_after_attempt(3), reraise=True
+            )(worker)
+
         max_workers = self.thread if (self.thread is not None and self.thread > 0) else None
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            news = list(executor.map(worker, sstk))
+            news = list(executor.map(translate_worker, sstk))
         self.last_page_text = "\n\n".join(news)
 
         # C. Typesetting

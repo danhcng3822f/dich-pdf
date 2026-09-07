@@ -130,9 +130,11 @@ def test_translate_stream_pdf2zh_layout():
             "total_pages": len(page_indices),
         }
 
-    with patch("app.api.routes.process_pdf2zh_stream", side_effect=fake_pdf2zh_stream):
+    with patch("app.api.routes.process_pdf2zh_stream", side_effect=fake_pdf2zh_stream), \
+         patch("app.api.routes.create_translator") as mock_create_translator:
         payload = {
             "file_id": file_id,
+            "source_lang": "Japanese",
             "target_lang": "Vietnamese",
             "page_range": "all",
             "engine_mode": "pdf2zh_layout",
@@ -150,6 +152,7 @@ def test_translate_stream_pdf2zh_layout():
         assert "event: completed" in body
         assert '"mono_ready": true' in body.lower()
         assert '"dual_ready": true' in body.lower()
+        assert mock_create_translator.call_args.kwargs["source_lang"] == "Japanese"
 
 
 def test_translate_stream_file_not_found():
@@ -193,6 +196,7 @@ def test_translate_stream_beamer_mode():
         assert "event: start" in body
         assert "event: page_completed" in body
         assert "event: completed" in body
+        assert mock_trans.await_args.kwargs["source_lang"] == "auto"
 
 
 def test_download_mono_and_dual_pdf():

@@ -11,6 +11,8 @@
   - 📊 **Chế độ 2: Tái cấu trúc Slide (LaTeX Beamer)**: Dành cho slide bài giảng, thuyết trình. Tái cấu trúc nội dung sang cú pháp LaTeX Beamer (khung block, alertblock, cột, công thức toán KaTeX).
 - 🌐 **Hỗ Trợ Cả Dịch Miễn Phí & Dịch Bằng AI**:
   - Dùng **Google Dịch** hoặc **Bing Dịch** hoàn toàn miễn phí mà **không cần API Key**.
+  - Tự động nhận diện ngôn ngữ nguồn, hỗ trợ toàn bộ ngôn ngữ có trên giao diện.
+  - Văn bản dài được chia đoạn an toàn, không còn bị cắt ở giới hạn 1.000/5.000 ký tự; có retry và chuyển sang engine miễn phí dự phòng khi dịch vụ tạm lỗi.
   - Dùng API Key AI của chính bạn: **OpenAI**, **DeepSeek**, **Google Gemini**, **Anthropic Claude**, hoặc **Custom OpenAI-Compatible API** (Ollama, vLLM, LMStudio...).
 - 🔑 **Bảo Mật Tuyệt Đối (BYOK)**: API Key được lưu trực tiếp trên trình duyệt của bạn (`LocalStorage`), không lưu trữ vĩnh viễn trên server.
 - ⚡ **Xem Đối Chiếu Song Ngữ Trực Tiếp**: Giao diện chia đôi màn hình (Side-by-Side) hiển thị ảnh trang PDF gốc đối chiếu với ảnh trang PDF dịch thật (ở chế độ PDF2ZH) hoặc bản xem trước Beamer slide (ở chế độ LaTeX).
@@ -65,7 +67,7 @@ Mở trình duyệt và truy cập:
    - Chọn chế độ dịch:
      - **📑 Giữ nguyên Layout (PDF2ZH)**: Nếu muốn xuất ra bản PDF dịch đè giữ nguyên tranh ảnh, bảng biểu và công thức toán.
      - **📊 Slide thuyết trình (LaTeX Beamer)**: Nếu dịch slide bài giảng muốn xem khung slide Beamer.
-   - Chọn ngôn ngữ đích (Tiếng Việt, Tiếng Anh, Tiếng Trung, Tiếng Nhật...) và phạm vi trang (VD: `all` hoặc `1-3, 5`).
+   - Chọn ngôn ngữ nguồn (`Tự động nhận diện` được khuyên dùng), ngôn ngữ đích và phạm vi trang (VD: `all` hoặc `1-3, 5`).
    - Nhấn **"Bắt đầu Dịch Ngay"**.
 
 3. **Theo Dõi & Tải Kết Quả**:
@@ -79,7 +81,7 @@ Mở trình duyệt và truy cập:
 
 ## 🧪 Chạy Kiểm Thử (Tests)
 
-Để chạy toàn bộ bài kiểm tra tự động (58 unit, integration và Playwright E2E tests):
+Để chạy toàn bộ bài kiểm tra tự động (unit, integration và Playwright E2E):
 
 ```bash
 pytest -v
@@ -90,3 +92,5 @@ pytest -v
 ```bash
 pytest tests/e2e/test_web_playwright.py -v
 ```
+
+> **Lưu ý:** Google/Bing miễn phí sử dụng giao diện web công khai, không phải API có SLA. Endpoint có thể bị giới hạn hoặc thay đổi. Sau khi retry thất bại, ứng dụng sẽ thử dịch vụ miễn phí còn lại; vì vậy nội dung trích xuất có thể được gửi tới cả Google và Microsoft. Test mạng thật chỉ chạy khi đặt `RUN_LIVE_TRANSLATION_TESTS=1`.

@@ -16,7 +16,10 @@ from .adapter import (
     PDF2ZHAdapter,
     create_translator,
     create_adapter,
+    FreeTranslationError,
+    normalize_language_code,
     normalize_tokens,
+    split_translation_chunks,
 )
 from .pdfinterp import PDFPageInterpreterEx
 from .converter import (
@@ -49,7 +52,10 @@ __all__ = [
     "PDF2ZHAdapter",
     "create_translator",
     "create_adapter",
+    "FreeTranslationError",
+    "normalize_language_code",
     "normalize_tokens",
+    "split_translation_chunks",
     "PDFPageInterpreterEx",
     "PDFConverterEx",
     "Paragraph",

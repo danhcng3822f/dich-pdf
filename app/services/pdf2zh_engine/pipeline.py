@@ -178,7 +178,7 @@ async def process_pdf2zh_stream(
             rsrcmgr,
             thread=thread,
             layout=layout,
-            lang_in=getattr(translator, "lang_in", "en"),
+            lang_in=getattr(translator, "lang_in", "auto"),
             lang_out=target_lang,
             translator=translator,
             noto_name=noto_name,

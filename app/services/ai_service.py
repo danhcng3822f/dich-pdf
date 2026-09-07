@@ -19,7 +19,12 @@ STYLE_DESCRIPTIONS = {
     "Casual": "Friendly, easy to understand and conversational tone."
 }
 
-def build_system_prompt(target_lang: str, style: str, custom_instruction: Optional[str] = None) -> str:
+def build_system_prompt(
+    target_lang: str,
+    style: str,
+    custom_instruction: Optional[str] = None,
+    source_lang: str = "auto",
+) -> str:
     style_desc = STYLE_DESCRIPTIONS.get(style, STYLE_DESCRIPTIONS["Default"])
     
     is_beamer = (style == "LaTeX_Beamer")
@@ -37,9 +42,14 @@ def build_system_prompt(target_lang: str, style: str, custom_instruction: Option
             "3. If there are columns or side-by-side components, use \\begin{columns} \\column{0.5\\textwidth} ... \\end{columns}.\n"
         )
 
+    source_instruction = (
+        "Detect the source language automatically"
+        if not source_lang or source_lang.lower() in {"auto", "auto-detect"}
+        else f"The source language is {source_lang}"
+    )
     prompt = (
         f"You are a world-class document translator and LaTeX typesetting specialist. "
-        f"Translate the given text accurately into {target_lang}.\n"
+        f"{source_instruction}. Translate the given text accurately into {target_lang}.\n"
         f"Translation Style: {style_desc}\n{beamer_rules}\n"
         "CRITICAL RULES FOR MATHEMATICAL EQUATIONS & LATEX:\n"
         "1. PRESERVE ALL LaTeX, mathematical formulas, symbols, and expressions EXACTLY as they appear (e.g., $x_i$, $$\\sum_{i=1}^n x_i$$, \\begin{equation}...\\end{equation}, \\alpha, \\beta, etc.). NEVER translate or damage LaTeX math syntax.\n"
@@ -111,11 +121,19 @@ async def translate_claude(text: str, system_prompt: str, config: AIConfig) -> s
         data = resp.json()
         return data["content"][0]["text"].strip()
 
-async def translate_text(text: str, target_lang: str, style: str, config: AIConfig) -> str:
+async def translate_text(
+    text: str,
+    target_lang: str,
+    style: str,
+    config: AIConfig,
+    source_lang: str = "auto",
+) -> str:
     if not text or not text.strip():
         return ""
     
-    system_prompt = build_system_prompt(target_lang, style, config.custom_prompt)
+    system_prompt = build_system_prompt(
+        target_lang, style, config.custom_prompt, source_lang=source_lang
+    )
     provider = config.provider.lower()
     
     if provider == "openai":
@@ -133,12 +151,12 @@ async def translate_text(text: str, target_lang: str, style: str, config: AIConf
     elif provider in ("google", "google_free"):
         import asyncio
         from app.services.pdf2zh_engine.adapter import GoogleFreeTranslator
-        translator = GoogleFreeTranslator(lang_in="en", lang_out=target_lang)
+        translator = GoogleFreeTranslator(lang_in=source_lang, lang_out=target_lang)
         return await asyncio.to_thread(translator.translate, text)
     elif provider in ("bing", "bing_free"):
         import asyncio
         from app.services.pdf2zh_engine.adapter import BingFreeTranslator
-        translator = BingFreeTranslator(lang_in="en", lang_out=target_lang)
+        translator = BingFreeTranslator(lang_in=source_lang, lang_out=target_lang)
         return await asyncio.to_thread(translator.translate, text)
     else:
         raise ValueError(f"Unsupported provider: {config.provider}")

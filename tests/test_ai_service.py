@@ -6,6 +6,12 @@ def test_build_system_prompt():
     assert "Vietnamese" in prompt
     assert "academic" in prompt.lower()
     assert "LaTeX" in prompt
+    assert "Detect the source language automatically" in prompt
+
+    explicit_prompt = build_system_prompt(
+        "Vietnamese", "Academic", source_lang="Japanese"
+    )
+    assert "source language is Japanese" in explicit_prompt
 
 @pytest.mark.asyncio
 async def test_translate_text_empty():
