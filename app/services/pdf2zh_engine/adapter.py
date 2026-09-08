@@ -312,7 +312,7 @@ class BaseTranslator:
             return self._cache[text]
 
         translated = self.do_translate(text)
-        translated = normalize_tokens(translated)
+        translated = unicodedata.normalize("NFC", normalize_tokens(translated))
         self._cache[text] = translated
         return translated
 

@@ -99,6 +99,67 @@ class Paragraph:
         self.brk: bool = brk
         self.color: Any = color
         self.toc_page_number: Optional[str] = toc_page_number
+        self.colors: List[Any] = []
+        if color is not None:
+            self.colors.append(color)
+
+
+def get_char_baseline_y(child: Any) -> float:
+    """Get the true text baseline Y coordinate from character's matrix."""
+    matrix = getattr(child, "matrix", None)
+    if matrix and len(matrix) == 6:
+        if abs(matrix[1]) < 1e-4 and abs(matrix[2]) < 1e-4:
+            return float(matrix[5])
+    return float(getattr(child, "y0", 0.0))
+
+
+def is_white_or_near_white(color: Any) -> bool:
+    """Check if a color is pure white or indistinguishable from white."""
+    if color is None:
+        return False
+    if isinstance(color, (int, float)):
+        return color >= 0.98
+    if isinstance(color, (tuple, list)):
+        if len(color) == 3:  # RGB
+            return all(float(c) >= 0.98 for c in color)
+        if len(color) == 4:  # CMYK
+            return all(float(c) <= 0.02 for c in color)
+        if len(color) == 1:
+            return float(color[0]) >= 0.98
+    return False
+
+
+def resolve_paragraph_color(paragraph: Paragraph) -> Any:
+    """Resolve the effective text color for a paragraph.
+
+    If a paragraph contains non-white body text but begins with a white bullet,
+    number badge, or icon (e.g. '1' in a blue circle on Beamer slides), avoid
+    inheriting the white bullet color, which renders the entire translated text
+    invisible on light backgrounds.
+    """
+    colors = getattr(paragraph, "colors", [])
+    if not colors:
+        return paragraph.color
+
+    non_white_colors = [c for c in colors if not is_white_or_near_white(c)]
+    if non_white_colors:
+        def color_key(c: Any) -> Any:
+            if isinstance(c, (list, tuple)):
+                return tuple(round(float(v), 4) for v in c)
+            if isinstance(c, (int, float)):
+                return round(float(c), 4)
+            return c
+
+        counter: Dict[Any, int] = {}
+        for c in non_white_colors:
+            k = color_key(c)
+            counter[k] = counter.get(k, 0) + 1
+        best_key = max(counter.keys(), key=lambda k: counter[k])
+        for c in non_white_colors:
+            if color_key(c) == best_key:
+                return c
+
+    return paragraph.color if paragraph.color is not None else colors[0]
 
 
 class PDFConverterEx(PDFConverter):
@@ -368,7 +429,7 @@ class TranslateConverter(PDFConverterEx):
                             sstk.append(f"{{v{len(var)}}}")
                             pstk.append(
                                 Paragraph(
-                                    child.y0,
+                                    get_char_baseline_y(child),
                                     child.x0,
                                     child.x0,
                                     child.x0,
@@ -396,7 +457,7 @@ class TranslateConverter(PDFConverterEx):
                         sstk.append("")
                         pstk.append(
                             Paragraph(
-                                child.y0,
+                                get_char_baseline_y(child),
                                 child.x0,
                                 child.x0,
                                 child.x0,
@@ -413,8 +474,9 @@ class TranslateConverter(PDFConverterEx):
                             child.size > pstk[-1].size
                             or len(sstk[-1].strip()) == 1
                         ) and child.get_text() != " ":
-                            pstk[-1].y -= child.size - pstk[-1].size
-                            pstk[-1].size = child.size
+                            if len(sstk[-1].strip()) == 1 and child.size > pstk[-1].size:
+                                pstk[-1].y = get_char_baseline_y(child)
+                            pstk[-1].size = max(pstk[-1].size, child.size)
                         sstk[-1] += child.get_text()
                 else:
                     if not vstk and cls == xt_cls and xt is not None and child.x0 > xt.x0:
@@ -426,9 +488,14 @@ class TranslateConverter(PDFConverterEx):
                     pstk[-1].x1 = max(pstk[-1].x1, child.x1)
                     pstk[-1].y0 = min(pstk[-1].y0, child.y0)
                     pstk[-1].y1 = max(pstk[-1].y1, child.y1)
-                    if child.get_text().strip() and pstk[-1].color is None:
+                    ch_text = child.get_text().strip()
+                    if ch_text:
                         graphicstate = getattr(child, "graphicstate", None)
-                        pstk[-1].color = getattr(graphicstate, "ncolor", None)
+                        ncolor = getattr(graphicstate, "ncolor", None)
+                        if ncolor is not None:
+                            pstk[-1].colors.append(ncolor)
+                            if pstk[-1].color is None:
+                                pstk[-1].color = ncolor
                 xt = child
                 xt_cls = cls
 
@@ -461,7 +528,7 @@ class TranslateConverter(PDFConverterEx):
                 sstk.append(f"{{v{len(var)}}}")
                 pstk.append(
                     Paragraph(
-                        vstk[0].y0,
+                        get_char_baseline_y(vstk[0]),
                         vstk[0].x0,
                         vstk[0].x0,
                         vstk[0].x0,
@@ -512,6 +579,7 @@ class TranslateConverter(PDFConverterEx):
         max_workers = self.thread if (self.thread is not None and self.thread > 0) else None
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             news = list(executor.map(translate_worker, translation_sources))
+        news = [unicodedata.normalize("NFC", t) for t in news]
         summary_lines = []
         for index, translated_text in enumerate(news):
             page_number = pstk[index].toc_page_number if index < len(pstk) else None
@@ -693,7 +761,7 @@ class TranslateConverter(PDFConverterEx):
             tx: float = x
             fcur_ = fcur
             ptr: int = 0
-            paragraph_color = pstk[id].color
+            paragraph_color = resolve_paragraph_color(pstk[id])
 
             toc_page_number = pstk[id].toc_page_number
             if toc_page_number is not None:
@@ -1009,6 +1077,63 @@ def refine_toc_row_layout(page: Any, layout: np.ndarray) -> np.ndarray:
     return layout
 
 
+def refine_table_layout(page: Any, layout: np.ndarray) -> np.ndarray:
+    """Assign a unique paragraph class to each table cell detected by PyMuPDF.
+
+    Without cell-level segmentation, all cells in a table share the same layout
+    class, causing the converter to merge text across multiple columns and rows
+    into one long paragraph. Giving each cell a distinct class ensures each cell's
+    text is translated and positioned inside its own cell boundaries.
+    """
+    if not hasattr(page, "find_tables"):
+        return layout
+
+    height, width = layout.shape
+    try:
+        table_finder = page.find_tables()
+        tabs = getattr(table_finder, "tables", [])
+    except Exception as exc:
+        log.warning("Could not extract tables for layout refinement: %s", exc)
+        return layout
+
+    if not tabs:
+        return layout
+
+    try:
+        page_rect = page.rect
+        scale_x = width / max(float(page_rect.width), 1.0)
+        scale_y = height / max(float(page_rect.height), 1.0)
+        page_x0 = float(page_rect.x0)
+        page_y0 = float(page_rect.y0)
+    except Exception:
+        scale_x = 1.0
+        scale_y = 1.0
+        page_x0 = 0.0
+        page_y0 = 0.0
+
+    next_class = max(2, int(np.max(layout)) + 1)
+    for t in tabs:
+        cells = getattr(t, "cells", None)
+        if not cells:
+            continue
+        for cell in cells:
+            x0, y0, x1, y1 = cell
+            px0 = (x0 - page_x0) * scale_x
+            px1 = (x1 - page_x0) * scale_x
+            py0 = (y0 - page_y0) * scale_y
+            py1 = (y1 - page_y0) * scale_y
+
+            left = int(np.clip(np.floor(px0), 0, width - 1))
+            right = int(np.clip(np.ceil(px1), 1, width))
+            bottom = int(np.clip(np.floor(height - py1), 0, height - 1))
+            top = int(np.clip(np.ceil(height - py0), 1, height))
+            if right > left and top > bottom:
+                layout[bottom:top, left:right] = next_class
+                next_class += 1
+
+    return layout
+
+
 def build_text_block_layout(page: Any, height: int, width: int) -> np.ndarray:
     """Build a safe layout mask from non-empty PyMuPDF text blocks.
 
@@ -1061,6 +1186,7 @@ def build_text_block_layout(page: Any, height: int, width: int) -> np.ndarray:
         layout[bottom:top, left:right] = next_class
         next_class += 1
 
+    layout = refine_table_layout(page, layout)
     return refine_toc_row_layout(page, layout)
 
 
@@ -1112,16 +1238,35 @@ def build_page_layout(page: Any, pix: Any, model: Optional[Any]) -> np.ndarray:
             int(np.clip(int(height - y0 + 1), 0, height)),
         )
 
-    for index, item in enumerate(boxes):
+    valid_boxes = []
+    for item in boxes:
+        x0, y0, x1, y1 = clipped_box(item)
+        box_w = abs(x1 - x0)
+        box_h = abs(y1 - y0)
+        if class_name(item) in frozen_classes and box_w >= 0.85 * width and box_h >= 0.80 * height:
+            log.warning(
+                "Ignoring full-page false-positive %s box (%dx%d on %dx%d page)",
+                class_name(item),
+                box_w,
+                box_h,
+                width,
+                height,
+            )
+            continue
+        valid_boxes.append((item, (x0, y0, x1, y1)))
+
+    if not any(class_name(item) not in frozen_classes for item, _ in valid_boxes):
+        return build_text_block_layout(page, height, width)
+
+    for index, (item, (x0, y0, x1, y1)) in enumerate(valid_boxes):
         if class_name(item) not in frozen_classes:
-            x0, y0, x1, y1 = clipped_box(item)
             layout[y0:y1, x0:x1] = index + 2
 
-    for item in boxes:
+    for item, (x0, y0, x1, y1) in valid_boxes:
         if class_name(item) in frozen_classes:
-            x0, y0, x1, y1 = clipped_box(item)
             layout[y0:y1, x0:x1] = 0
 
+    layout = refine_table_layout(page, layout)
     return refine_toc_row_layout(page, layout)
 
 

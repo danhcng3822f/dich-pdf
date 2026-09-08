@@ -29,6 +29,9 @@ from .converter import (
     TranslateConverter,
     build_page_layout,
     build_text_block_layout,
+    refine_table_layout,
+    resolve_paragraph_color,
+    get_char_baseline_y,
     patch_page,
 )
 from .pipeline import (
@@ -65,6 +68,9 @@ __all__ = [
     "TranslateConverter",
     "build_page_layout",
     "build_text_block_layout",
+    "refine_table_layout",
+    "resolve_paragraph_color",
+    "get_char_baseline_y",
     "patch_page",
     "render_pixmap_base64",
     "create_dual_pdf",

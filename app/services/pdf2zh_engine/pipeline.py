@@ -55,22 +55,33 @@ def create_dual_pdf(
         orig_count = len(doc_orig)
         trans_count = len(doc_trans)
 
+        if orig_count > 0:
+            doc_dual.insert_pdf(doc_orig)
+        if trans_count > 0:
+            doc_dual.insert_pdf(doc_trans)
+
+        order: List[int] = []
         if page_indices is not None:
             if trans_count == len(page_indices):
                 for idx, orig_pno in enumerate(page_indices):
                     if 0 <= orig_pno < orig_count:
-                        doc_dual.insert_pdf(doc_orig, from_page=orig_pno, to_page=orig_pno)
-                        doc_dual.insert_pdf(doc_trans, from_page=idx, to_page=idx)
+                        order.append(orig_pno)
+                        if idx < trans_count:
+                            order.append(orig_count + idx)
             else:
                 for orig_pno in page_indices:
-                    if 0 <= orig_pno < orig_count and 0 <= orig_pno < trans_count:
-                        doc_dual.insert_pdf(doc_orig, from_page=orig_pno, to_page=orig_pno)
-                        doc_dual.insert_pdf(doc_trans, from_page=orig_pno, to_page=orig_pno)
+                    if 0 <= orig_pno < orig_count:
+                        order.append(orig_pno)
+                        if orig_pno < trans_count:
+                            order.append(orig_count + orig_pno)
         else:
             for pno in range(orig_count):
-                doc_dual.insert_pdf(doc_orig, from_page=pno, to_page=pno)
+                order.append(pno)
                 if pno < trans_count:
-                    doc_dual.insert_pdf(doc_trans, from_page=pno, to_page=pno)
+                    order.append(orig_count + pno)
+
+        if order:
+            doc_dual.select(order)
 
         doc_dual.save(str(output_path), deflate=True, garbage=3)
     finally:
