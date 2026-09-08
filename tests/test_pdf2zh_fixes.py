@@ -225,3 +225,82 @@ def test_create_dual_pdf_page_ordering(tmp_path):
     assert actual == expected
     res_doc.close()
 
+
+def test_heading_and_body_font_sizes_preserved_with_model_coarse_box():
+    """Bug 4: Heading (16pt) and body text (10pt) must retain their distinct font sizes
+    and not be merged into a single uniform font size or turned into formula variables."""
+    import re
+    from app.services.pdf2zh_engine.converter import patch_page
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=300, height=200)
+    page.insert_text((30, 40), "Large Heading Title", fontsize=16)
+    page.insert_text((30, 80), "Normal body paragraph text line 1", fontsize=10)
+    page.insert_text((30, 95), "Normal body paragraph text line 2", fontsize=10)
+
+    # Coarse box covering both heading and body
+    mock_box = Mock()
+    mock_box.cls = 0
+    mock_box.xyxy = np.array([20.0, 20.0, 280.0, 150.0])
+    mock_res = Mock()
+    mock_res.boxes = [mock_box]
+    mock_res.names = {0: "plain text"}
+    mock_model = Mock()
+    mock_model.predict.return_value = [mock_res]
+
+    rsrc = PDFResourceManager()
+    conv = TranslateConverter(
+        rsrc,
+        translator=DummyTranslator(),
+        noto_name="helv",
+        noto=pymupdf.Font("helv"),
+    )
+    ops = patch_page(page, model=mock_model, converter=conv)
+    font_sizes = sorted(
+        list(set(round(float(s), 1) for s in re.findall(r"/helv\s+([0-9\.]+)\s+Tf", ops)))
+    )
+
+    # Heading (16pt) and body (10pt) must both exist in ops
+    assert 16.0 in font_sizes
+    assert 10.0 in font_sizes
+    assert len(font_sizes) >= 2
+
+    # Body text must be translated and present in last_page_text, not converted to {v0}
+    assert "Large Heading Title" in conv.last_page_text
+    assert "Normal body paragraph text line 1" in conv.last_page_text
+    assert "{v" not in conv.last_page_text
+
+
+def test_font_size_shift_triggers_new_paragraph():
+    """Different font sizes inside the same layout block must not be merged into one paragraph."""
+    source_font = Mock()
+    source_font.fontname = "VNSS10"
+    source_font.char_width.return_value = 0.5
+    state = PDFGraphicState()
+
+    ltpage = LTPage(0, (0, 0, 300, 300))
+    # Line 1: 16pt heading
+    _add_char(ltpage, "H", 30, 160, source_font, state, size=16)
+    _add_char(ltpage, "i", 40, 160, source_font, state, size=16)
+
+    # Line 2: 10pt body text
+    _add_char(ltpage, "B", 30, 120, source_font, state, size=10)
+    _add_char(ltpage, "o", 40, 120, source_font, state, size=10)
+
+    rsrc = PDFResourceManager()
+    layout = np.ones((300, 300), dtype=int)  # same layout class
+    conv = TranslateConverter(
+        rsrc,
+        translator=DummyTranslator(),
+        noto_name="helv",
+        noto=pymupdf.Font("helv"),
+        layout={0: layout},
+    )
+    conv.receive_layout(ltpage)
+
+    paragraphs = [p for p in conv.last_page_text.split("\n\n") if p.strip()]
+    assert len(paragraphs) == 2
+    assert "Hi" in paragraphs[0]
+    assert "Bo" in paragraphs[1]
+
+

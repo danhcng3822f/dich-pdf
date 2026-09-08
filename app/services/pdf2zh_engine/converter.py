@@ -390,6 +390,9 @@ class TranslateConverter(PDFConverterEx):
                         and len(sstk[-1].strip()) > 1
                         and pstk
                         and child.size < pstk[-1].size * 0.79
+                        and xt is not None
+                        and child.x0 >= xt.x0
+                        and abs(child.y0 - xt.y0) < pstk[-1].size * 0.8
                     )
                     or vflag(getattr(child, "fontname", ""), child.get_text())
                     or (child_matrix[0] == 0 and child_matrix[3] == 0)
@@ -447,7 +450,32 @@ class TranslateConverter(PDFConverterEx):
                         vfix = 0
 
                 if not vstk:
-                    if cls == xt_cls and sstk and pstk and xt is not None:
+                    font_size_shifted = (
+                        xt is not None
+                        and (
+                            abs(child.size - xt.size) > 1.2
+                            or (
+                                xt.size > 0
+                                and (
+                                    child.size / xt.size > 1.25
+                                    or child.size / xt.size < 0.8
+                                )
+                            )
+                        )
+                    )
+                    vertical_gap_large = (
+                        xt is not None
+                        and child.x1 < xt.x0
+                        and (xt.y0 - child.y1) > 1.8 * max(child.size, xt.size)
+                    )
+                    if (
+                        cls == xt_cls
+                        and sstk
+                        and pstk
+                        and xt is not None
+                        and not font_size_shifted
+                        and not vertical_gap_large
+                    ):
                         if child.x0 > xt.x1 + 1:
                             sstk[-1] += " "
                         elif child.x1 < xt.x0:
@@ -476,7 +504,8 @@ class TranslateConverter(PDFConverterEx):
                         ) and child.get_text() != " ":
                             if len(sstk[-1].strip()) == 1 and child.size > pstk[-1].size:
                                 pstk[-1].y = get_char_baseline_y(child)
-                            pstk[-1].size = max(pstk[-1].size, child.size)
+                            if child.size <= pstk[-1].size * 1.25:
+                                pstk[-1].size = max(pstk[-1].size, child.size)
                         sstk[-1] += child.get_text()
                 else:
                     if not vstk and cls == xt_cls and xt is not None and child.x0 > xt.x0:
@@ -1265,6 +1294,41 @@ def build_page_layout(page: Any, pix: Any, model: Optional[Any]) -> np.ndarray:
     for item, (x0, y0, x1, y1) in valid_boxes:
         if class_name(item) in frozen_classes:
             layout[y0:y1, x0:x1] = 0
+
+    try:
+        page_dict = page.get_text("dict")
+        page_rect = page.rect
+        scale_x = width / max(float(page_rect.width), 1.0)
+        scale_y = height / max(float(page_rect.height), 1.0)
+        next_class = max(2, int(np.max(layout)) + 1)
+        for block in page_dict.get("blocks", []):
+            if block.get("type", 0) != 0:
+                continue
+            spans = [
+                s
+                for l in block.get("lines", [])
+                for s in l.get("spans", [])
+                if str(s.get("text", "")).strip()
+            ]
+            if not spans:
+                continue
+            x0 = min(float(s["bbox"][0]) for s in spans)
+            y0 = min(float(s["bbox"][1]) for s in spans)
+            x1 = max(float(s["bbox"][2]) for s in spans)
+            y1 = max(float(s["bbox"][3]) for s in spans)
+            px0 = (x0 - float(page_rect.x0)) * scale_x
+            px1 = (x1 - float(page_rect.x0)) * scale_x
+            py0 = (y0 - float(page_rect.y0)) * scale_y
+            py1 = (y1 - float(page_rect.y0)) * scale_y
+            left = int(np.clip(np.floor(px0 - 1), 0, width - 1))
+            right = int(np.clip(np.ceil(px1 + 1), 1, width))
+            bottom = int(np.clip(np.floor(height - py1 - 1), 0, height - 1))
+            top = int(np.clip(np.ceil(height - py0 + 1), 1, height))
+            if right > left and top > bottom:
+                layout[bottom:top, left:right] = next_class
+                next_class += 1
+    except Exception as exc:
+        log.warning("Could not overlay native text blocks on layout: %s", exc)
 
     layout = refine_table_layout(page, layout)
     return refine_toc_row_layout(page, layout)
