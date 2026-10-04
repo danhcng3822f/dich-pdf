@@ -1,0 +1,19 @@
+.git
+.gitignore
+.pytest_cache
+.superpowers
+__pycache__
+*.pyc
+*.pyo
+.env
+
+# Not needed at runtime: the pdf2zh engine is vendored inside
+# app/services/pdf2zh_engine/, this is upstream reference source only.
+PDFMathTranslate-main
+
+# Local runtime state and dev-only files.
+storage
+tests
+docs
+pytest.ini
+requirements-dev.txt

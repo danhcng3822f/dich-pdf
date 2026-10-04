@@ -54,6 +54,45 @@ Mở trình duyệt và truy cập:
 
 ---
 
+## 🚢 Triển Khai (Deploy)
+
+Ứng dụng đóng gói bằng Docker nên chạy được trên VPS riêng, Render, Railway, Fly.io hoặc bất kỳ host nào có Docker.
+
+### Vì sao không deploy bằng Vercel Functions
+
+Vercel giới hạn cứng request body ở **4,5 MB** và trả `413 FUNCTION_PAYLOAD_TOO_LARGE`; giới hạn này do AWS Lambda enforce nên **không thể nâng lên**. Vì toàn bộ file PDF phải đi qua function, upload luôn bị chặn dưới 4,5 MB. Muốn vượt phải upload trực tiếp từ trình duyệt lên storage ngoài (Vercel Blob / S3) rồi chỉ gửi URL vào function — chưa được triển khai trong repo này.
+
+### Chạy bằng Docker
+
+```bash
+docker build -t dich-pdf .
+docker run -p 8000:8000 -v dich-pdf-storage:/app/storage dich-pdf
+```
+
+Mở 👉 **[http://127.0.0.1:8000](http://127.0.0.1:8000)**
+
+### Deploy lên Render
+
+1. Tạo **Web Service** mới, trỏ tới repo này, chọn **Runtime: Docker**. Render tự build từ `Dockerfile` và tự inject biến `PORT`.
+2. **Gắn Persistent Disk** và mount tại `/app/storage`. Đây là nơi chứa uploads, exports, font cache và model cache (`app/config.py:11`). Không gắn disk thì các thư mục này mất mỗi lần service restart hoặc deploy.
+3. **Health Check Path**: `/`
+4. **RAM tối thiểu 2 GB.** Xử lý file PDF 30 MB bằng PyMuPDF rất tốn bộ nhớ; gói 512 MB sẽ bị OOM kill giữa chừng.
+5. **Không tăng số instance / số worker.** `UPLOAD_STORE` và `JOB_STORE` là dict trong RAM (`app/api/routes.py:24`), nên request dịch hoặc tải file rơi vào instance khác sẽ trả 404. Image đã cố định `--workers 1`; hãy giữ đúng 1 instance.
+
+### Cấu hình giới hạn upload
+
+Mặc định ngoài Vercel là **30 MB**. Đổi bằng biến môi trường:
+
+```bash
+MAX_UPLOAD_SIZE_MB=50
+```
+
+> Tên biến là `MAX_UPLOAD_SIZE_MB`, **không có** tiền tố `DICHPDF_`. `Settings` trong `app/config.py:25` không khai báo `env_prefix`, nên pydantic-settings dùng thẳng tên field.
+
+> Render không công bố giới hạn request size (nhân viên Render trả lời "we do not have any request size restrictions"), nhưng có báo cáo cộng đồng về `413 Payload Too Large` và proxy từ chối upload. Sau khi deploy, hãy test thật một file >4,5 MB để xác nhận trước khi tin vào cấu hình này.
+
+---
+
 ## 📖 Hướng Dẫn Sử Dụng
 
 1. **Cấu Hình Dịch Vụ**:
@@ -98,4 +137,4 @@ pytest tests/e2e/test_web_playwright.py -v
 
 > **Lưu ý:** Google/Bing miễn phí sử dụng giao diện web công khai, không phải API có SLA. Endpoint có thể bị giới hạn hoặc thay đổi. Sau khi retry thất bại, ứng dụng sẽ thử dịch vụ miễn phí còn lại; vì vậy nội dung trích xuất có thể được gửi tới cả Google và Microsoft. Test mạng thật chỉ chạy khi đặt `RUN_LIVE_TRANSLATION_TESTS=1`.
 
-> Khi chạy trên Vercel Functions, giao diện giới hạn file tải lên ở 4 MB để nằm dưới giới hạn request 4,5 MB của nền tảng. Chạy bằng `python run.py` vẫn hỗ trợ tối đa 30 MB.
+> Giới hạn upload mặc định là **30 MB** khi chạy bằng `python run.py` hoặc Docker, và **4 MB** khi chạy trên Vercel (do giới hạn request 4,5 MB của nền tảng). Xem mục **Triển Khai (Deploy)** ở trên.
