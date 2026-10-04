@@ -271,7 +271,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
         const runtimeConfig = await window.API.getRuntimeConfig();
-        const maxUploadSizeMb = runtimeConfig.max_upload_size_mb || 50;
+        const maxUploadSizeMb = runtimeConfig.max_upload_size_mb || 30;
         if (file.size > maxUploadSizeMb * 1024 * 1024) {
             showToast(`File vượt quá giới hạn ${maxUploadSizeMb} MB của máy chủ hiện tại`, "error");
             return;

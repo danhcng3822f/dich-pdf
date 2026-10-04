@@ -57,7 +57,7 @@ const API = {
                     if (!res.ok) throw new Error(`HTTP ${res.status}`);
                     return res.json();
                 })
-                .catch(() => ({ max_upload_size_mb: 50 }));
+                .catch(() => ({ max_upload_size_mb: 30 }));
         }
         return this.runtimeConfigPromise;
     },

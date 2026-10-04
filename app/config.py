@@ -31,6 +31,6 @@ class Settings(BaseSettings):
     previews_dir: Path = PREVIEWS_DIR
     # Vercel Functions reject request bodies above 4.5 MB before FastAPI can
     # read them. Keep some room for multipart boundaries in production.
-    max_upload_size_mb: int = 4 if IS_VERCEL else 50
+    max_upload_size_mb: int = 4 if IS_VERCEL else 30
 
 settings = Settings()

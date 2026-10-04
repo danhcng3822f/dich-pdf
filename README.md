@@ -98,4 +98,4 @@ pytest tests/e2e/test_web_playwright.py -v
 
 > **Lưu ý:** Google/Bing miễn phí sử dụng giao diện web công khai, không phải API có SLA. Endpoint có thể bị giới hạn hoặc thay đổi. Sau khi retry thất bại, ứng dụng sẽ thử dịch vụ miễn phí còn lại; vì vậy nội dung trích xuất có thể được gửi tới cả Google và Microsoft. Test mạng thật chỉ chạy khi đặt `RUN_LIVE_TRANSLATION_TESTS=1`.
 
-> Khi chạy trên Vercel Functions, giao diện giới hạn file tải lên ở 4 MB để nằm dưới giới hạn request 4,5 MB của nền tảng. Chạy bằng `python run.py` vẫn hỗ trợ tối đa 50 MB.
+> Khi chạy trên Vercel Functions, giao diện giới hạn file tải lên ở 4 MB để nằm dưới giới hạn request 4,5 MB của nền tảng. Chạy bằng `python run.py` vẫn hỗ trợ tối đa 30 MB.
