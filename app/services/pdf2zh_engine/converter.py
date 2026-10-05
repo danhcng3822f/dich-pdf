@@ -529,6 +529,15 @@ class TranslateConverter(PDFConverterEx):
                         and child.x1 < xt.x0
                         and (xt.y0 - child.y1) > 1.8 * max(child.size, xt.size)
                     )
+                    # Figure labels share one layout class, so a class change
+                    # cannot separate them. Without this test the labels merge
+                    # into a single paragraph and every label is drawn at the
+                    # first one's position. Normal paragraph lines are closer
+                    # than 3 line-heights, so they still join up.
+                    position_jump = (
+                        xt is not None
+                        and abs(child.y0 - xt.y0) > 3.0 * max(child.size, xt.size)
+                    )
                     if (
                         cls == xt_cls
                         and sstk
@@ -536,6 +545,7 @@ class TranslateConverter(PDFConverterEx):
                         and xt is not None
                         and not font_size_shifted
                         and not vertical_gap_large
+                        and not position_jump
                     ):
                         if child.x0 > xt.x1 + 1:
                             sstk[-1] += " "

@@ -1,3 +1,4 @@
+import re
 import unicodedata
 import numpy as np
 import pymupdf
@@ -93,6 +94,41 @@ def test_all_white_paragraph_preserves_white():
     p.colors = [1.0, 1.0, 1.0]
     color = resolve_paragraph_color(p)
     assert color == 1.0
+
+
+def test_far_apart_labels_sharing_one_class_are_not_merged():
+    """Figure labels share a single layout class, so a class change cannot
+    separate them. Two labels far apart must each be drawn at their own
+    position instead of collapsing into one run at the first one's place."""
+    translator = DummyTranslator(mapping={"AB": "AB", "CD": "CD"})
+    converter = TranslateConverter(
+        PDFResourceManager(),
+        translator=translator,
+        # One class covering the whole page, exactly like a figure region.
+        layout={0: np.full((400, 400), 62, dtype=int)},
+        noto_name="helv",
+        noto=pymupdf.Font("helv"),
+    )
+
+    source_font = Mock()
+    source_font.fontname = "SourceSans"
+    source_font.char_width.return_value = 0.5
+    state = PDFGraphicState()
+    state.ncolor = 0.0
+
+    ltpage = LTPage(0, (0, 0, 400, 400))
+    for index, char in enumerate("AB"):
+        _add_char(ltpage, char, 20 + index * 6, 380, source_font, state)
+    for index, char in enumerate("CD"):
+        _add_char(ltpage, char, 20 + index * 6, 40, source_font, state)
+
+    ops = converter.receive_layout(ltpage)
+
+    draw_rows = {
+        round(float(match.group("y")))
+        for match in re.finditer(r"[-\d.]+ [-\d.]+ [-\d.]+ [-\d.]+ [-\d.]+ (?P<y>[-\d.]+) Tm", ops)
+    }
+    assert len(draw_rows) == 2, f"labels were merged into one run: {ops}"
 
 
 def test_doclayout_rejects_full_page_false_positive_frozen_box():
