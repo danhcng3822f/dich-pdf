@@ -1,6 +1,27 @@
+import json
+
 import httpx
 from pydantic import BaseModel, Field
 from typing import Optional
+
+
+def parse_chat_completion(body: str) -> dict:
+    """Parse a chat-completion body, tolerating SSE framing.
+
+    Some OpenAI-compatible gateways answer with an event-stream body even when
+    streaming was never requested: the payload is one complete JSON object with
+    the SSE terminator glued straight onto it, e.g. ``{"choices":[...]}data:
+    [DONE]``. ``json.loads`` rejects that trailing data, so decode the first
+    JSON value and ignore whatever follows.
+    """
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError:
+        start = body.find("{")
+        if start < 0:
+            raise
+        value, _ = json.JSONDecoder().raw_decode(body, start)
+        return value
 
 class AIConfig(BaseModel):
     provider: str = Field(..., description="openai | deepseek | gemini | claude | custom | google | google_free | bing | bing_free")
@@ -81,8 +102,14 @@ async def translate_openai_compatible(text: str, system_prompt: str, config: AIC
         resp = await client.post(url, json=payload, headers=headers)
         if resp.status_code != 200:
             raise RuntimeError(f"AI Provider error ({resp.status_code}): {resp.text}")
-        data = resp.json()
-        return data["choices"][0]["message"]["content"].strip()
+        data = parse_chat_completion(resp.text)
+        try:
+            return data["choices"][0]["message"]["content"].strip()
+        except (KeyError, IndexError, TypeError) as exc:
+            raise RuntimeError(
+                "AI provider returned an unexpected completion shape: "
+                f"{resp.text[:200]}"
+            ) from exc
 
 async def translate_gemini(text: str, system_prompt: str, config: AIConfig) -> str:
     model = config.model or "gemini-1.5-flash"

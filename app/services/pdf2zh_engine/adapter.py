@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from app.services.ai_service import AIConfig
+from app.services.ai_service import AIConfig, parse_chat_completion
 
 logger = logging.getLogger(__name__)
 
@@ -790,7 +790,6 @@ def build_llm_system_prompt(target_lang: str, custom_prompt: Optional[str] = Non
 
 class LLMTranslator(BaseTranslator):
     """Synchronous LLM translator using httpx for multi-provider support."""
-
     name: str = "llm"
 
     def __init__(
@@ -830,8 +829,14 @@ class LLMTranslator(BaseTranslator):
             resp = client.post(url, json=payload, headers=headers)
             if resp.status_code != 200:
                 raise RuntimeError(f"AI Provider error ({resp.status_code}): {resp.text}")
-            data = resp.json()
-            return data["choices"][0]["message"]["content"].strip()
+            data = parse_chat_completion(resp.text)
+            try:
+                return data["choices"][0]["message"]["content"].strip()
+            except (KeyError, IndexError, TypeError) as exc:
+                raise RuntimeError(
+                    "AI provider returned an unexpected completion shape: "
+                    f"{resp.text[:200]}"
+                ) from exc
 
     def _translate_gemini(self, text: str) -> str:
         model = self.config.model or "gemini-1.5-flash"

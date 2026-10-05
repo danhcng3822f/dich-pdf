@@ -18,7 +18,7 @@ from app.services.pdf2zh_engine.adapter import (
     create_adapter,
     normalize_tokens,
 )
-from app.services.ai_service import AIConfig
+from app.services.ai_service import AIConfig, parse_chat_completion
 
 
 class DummyTranslator(BaseTranslator):
@@ -738,9 +738,9 @@ def test_llm_translator_openai_mocked():
     with patch.object(httpx.Client, "post") as mock_post:
         mock_resp = MagicMock()
         mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            "choices": [{"message": {"content": "Văn bản dịch chứa {v0}."}}]
-        }
+        mock_resp.text = (
+            '{"choices":[{"message":{"content":"Văn bản dịch chứa {v0}."}}]}'
+        )
         mock_post.return_value = mock_resp
 
         result = translator.translate("Input text with {v0}.")
@@ -752,6 +752,28 @@ def test_llm_translator_openai_mocked():
         system_msg = payload["messages"][0]["content"]
         assert "{v\\d+}" in system_msg or "{v" in system_msg
         assert "preserve" in system_msg.lower()
+
+
+def test_llm_translator_accepts_sse_framed_completion():
+    """Regression: a gateway that glues `data: [DONE]` onto the completion body
+    used to crash translation with a JSONDecodeError."""
+    config = AIConfig(
+        provider="custom",
+        api_key="test-key",
+        model="test-model",
+        base_url="https://gateway.example/v1",
+    )
+    translator = LLMTranslator(config=config, lang_in="en", lang_out="vi")
+
+    with patch.object(httpx.Client, "post") as mock_post:
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = (
+            '{"choices":[{"message":{"content":"Điện trường {v0}."}}]}data: [DONE]'
+        )
+        mock_post.return_value = mock_resp
+
+        assert translator.translate("Electric field {v0}.") == "Điện trường {v0}."
 
 
 def test_llm_translator_gemini_mocked():
@@ -848,3 +870,24 @@ def test_base_translator_translate_strict_matches_translate():
             return f"[{text}]"
 
     assert Echo(name="echo").translate_strict("Hi") == "[Hi]"
+
+
+def test_parse_chat_completion_accepts_plain_json():
+    body = '{"choices":[{"message":{"content":"Xin chào"}}]}'
+    assert parse_chat_completion(body)["choices"][0]["message"]["content"] == "Xin chào"
+
+
+def test_parse_chat_completion_tolerates_sse_terminator():
+    """Some OpenAI-compatible gateways answer with an event-stream body even when
+    streaming was not requested: one complete object with `data: [DONE]` glued
+    straight onto it. resp.json() rejects that, so translation used to fail."""
+    body = '{"choices":[{"message":{"content":"Xin chào"}}]}data: [DONE]'
+
+    parsed = parse_chat_completion(body)
+
+    assert parsed["choices"][0]["message"]["content"] == "Xin chào"
+
+
+def test_parse_chat_completion_rejects_a_body_with_no_json():
+    with pytest.raises(ValueError):
+        parse_chat_completion("data: [DONE]")
