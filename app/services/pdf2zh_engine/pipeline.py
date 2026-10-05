@@ -212,6 +212,10 @@ async def process_pdf2zh_stream(
 
             # 2. Render original page image
             orig_b64 = render_pixmap_base64(doc_orig[pno], zoom=zoom)
+            # A page can be a pure scan with no text layer at all (book covers
+            # usually are). Nothing can be translated there, so say so instead of
+            # showing an unchanged page that looks like a failure.
+            source_has_text = bool(doc_orig[pno].get_text().strip())
 
             # Allow async event loop to breathe
             await asyncio.sleep(0)
@@ -254,6 +258,7 @@ async def process_pdf2zh_stream(
                 "original_image": orig_b64,
                 "translated_image": trans_b64,
                 "translated_text": text_summary or "",
+                "has_text": source_has_text,
             }
 
         # Font subsetting (optional fallback)

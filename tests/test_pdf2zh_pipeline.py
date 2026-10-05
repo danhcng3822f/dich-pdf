@@ -43,6 +43,30 @@ def sample_pdf(tmp_path: Path) -> Path:
     return pdf_path
 
 
+@pytest.fixture
+def scanned_pdf(tmp_path: Path) -> Path:
+    """Page 1 has a text layer; page 2 is a pure scan (image, no text at all)."""
+    pdf_path = tmp_path / "scanned.pdf"
+    doc = pymupdf.open()
+
+    p1 = doc.new_page(width=595, height=842)
+    p1.insert_text((72, 100), "Page with a real text layer", fontsize=16)
+
+    # Render a page, then paste it back as a picture: no text layer survives.
+    source = pymupdf.open()
+    source_page = source.new_page(width=595, height=842)
+    source_page.insert_text((72, 100), "SCANNED COVER", fontsize=24)
+    pix = source_page.get_pixmap()
+    source.close()
+
+    p2 = doc.new_page(width=595, height=842)
+    p2.insert_image(pymupdf.Rect(0, 0, 595, 842), pixmap=pix)
+
+    doc.save(str(pdf_path))
+    doc.close()
+    return pdf_path
+
+
 def test_render_pixmap_base64(sample_pdf: Path):
     doc = pymupdf.open(str(sample_pdf))
     page = doc[0]
@@ -272,4 +296,30 @@ async def test_process_pdf2zh_stream_model_none_fallback(tmp_path: Path, sample_
     final_event = events[-1]
     assert final_event["event"] == "completed"
     assert mono_out.exists()
+
+
+@pytest.mark.asyncio
+async def test_page_without_a_text_layer_is_flagged(tmp_path: Path, scanned_pdf: Path):
+    """A scanned page has nothing to translate, so the UI must be told that
+    instead of showing an unchanged page that looks like a failure."""
+    mono_out = tmp_path / "mono_scanned.pdf"
+    dual_out = tmp_path / "dual_scanned.pdf"
+
+    events = []
+    async for event in process_pdf2zh_stream(
+        file_path=scanned_pdf,
+        page_indices=[0, 1],
+        target_lang="vi",
+        translator=MockPipelineTranslator(lang_in="en", lang_out="vi"),
+        mono_out_path=mono_out,
+        dual_out_path=dual_out,
+    ):
+        events.append(event)
+
+    flags = {
+        event["page_number"]: event["has_text"]
+        for event in events
+        if event["event"] == "page_completed"
+    }
+    assert flags == {1: True, 2: False}
 

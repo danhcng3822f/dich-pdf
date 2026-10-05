@@ -688,6 +688,9 @@ document.addEventListener("DOMContentLoaded", () => {
                         </span>
                         <h3 class="font-semibold text-slate-800 text-sm">Trang ${page.page_number}</h3>
                         <span class="text-[11px] font-medium text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-100">PDF2ZH Layout</span>
+                        ${page.has_text === false ? `
+                        <span class="text-[11px] font-medium text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200" title="Trang này là ảnh (scan), không có lớp text nên không thể dịch">Trang ảnh — không có text để dịch</span>
+                        ` : ''}
                     </div>
                     <div class="flex items-center space-x-2">
                         ${page.translated_text ? `

@@ -311,6 +311,7 @@ async def translate_stream(req: TranslationStreamRequest):
                             "original_image": orig_b64,
                             "translated_image": trans_b64,
                             "translated_text": text,
+                            "has_text": event_item.get("has_text", True),
                             "engine_mode": "pdf2zh_layout",
                         }
                         translated_pages.append(page_result)
