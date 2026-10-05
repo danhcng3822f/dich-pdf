@@ -808,3 +808,43 @@ def test_llm_translator_custom_requires_base_url():
     translator = LLMTranslator(config=config, lang_in="en", lang_out="vi")
     with pytest.raises(ValueError, match="Custom provider requires Base URL"):
         translator.translate("Hello")
+
+
+def _blocked_google_translator(monkeypatch):
+    """A free translator whose upstream is blocked, as on a cloud host."""
+    from app.services.pdf2zh_engine.adapter import _PreserveSourceText
+
+    translator = GoogleFreeTranslator(lang_in="en", lang_out="vi")
+
+    def always_blocked(text: str) -> str:
+        raise _PreserveSourceText("both providers blocked")
+
+    monkeypatch.setattr(translator, "do_translate", always_blocked)
+    return translator, _PreserveSourceText
+
+
+def test_blocked_free_translator_keeps_source_and_counts_it(monkeypatch):
+    """The forgiving path still keeps the source text, but now it is countable,
+    so the pipeline can tell the user instead of failing silently."""
+    translator, _ = _blocked_google_translator(monkeypatch)
+
+    assert translator.translate("Hello") == "Hello"
+    assert translator.preserved_count == 1
+
+
+def test_translate_strict_raises_instead_of_keeping_the_source(monkeypatch):
+    """A connection check must not be told the translator works when it only
+    handed the input back."""
+    translator, preserve_error = _blocked_google_translator(monkeypatch)
+
+    with pytest.raises(preserve_error):
+        translator.translate_strict("Hello")
+    assert translator.preserved_count == 0
+
+
+def test_base_translator_translate_strict_matches_translate():
+    class Echo(BaseTranslator):
+        def do_translate(self, text: str) -> str:
+            return f"[{text}]"
+
+    assert Echo(name="echo").translate_strict("Hi") == "[Hi]"

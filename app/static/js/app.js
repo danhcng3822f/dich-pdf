@@ -691,6 +691,9 @@ document.addEventListener("DOMContentLoaded", () => {
                         ${page.has_text === false ? `
                         <span class="text-[11px] font-medium text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200" title="Trang này là ảnh (scan), không có lớp text nên không thể dịch">Trang ảnh — không có text để dịch</span>
                         ` : ''}
+                        ${page.preserved_segments > 0 ? `
+                        <span class="text-[11px] font-medium text-red-700 bg-red-50 px-2 py-0.5 rounded-full border border-red-200" title="Nhà dịch không phản hồi nên ${page.preserved_segments} đoạn được giữ nguyên bản gốc. Kiểm tra kết nối dịch hoặc dùng API key.">Nhà dịch không phản hồi — giữ nguyên bản gốc</span>
+                        ` : ''}
                     </div>
                     <div class="flex items-center space-x-2">
                         ${page.translated_text ? `

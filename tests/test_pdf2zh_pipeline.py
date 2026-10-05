@@ -323,3 +323,36 @@ async def test_page_without_a_text_layer_is_flagged(tmp_path: Path, scanned_pdf:
     }
     assert flags == {1: True, 2: False}
 
+
+@pytest.mark.asyncio
+async def test_page_reports_segments_kept_in_the_source_language(
+    tmp_path: Path, sample_pdf: Path, monkeypatch
+):
+    """When every segment falls back to the source text the page was not
+    translated at all, and the event must say so rather than look successful."""
+    from app.services.pdf2zh_engine.adapter import (
+        GoogleFreeTranslator,
+        _PreserveSourceText,
+    )
+
+    translator = GoogleFreeTranslator(lang_in="en", lang_out="vi")
+
+    def always_blocked(text: str) -> str:
+        raise _PreserveSourceText("both providers blocked")
+
+    monkeypatch.setattr(translator, "do_translate", always_blocked)
+
+    events = []
+    async for event in process_pdf2zh_stream(
+        file_path=sample_pdf,
+        page_indices=[0],
+        target_lang="vi",
+        translator=translator,
+        mono_out_path=tmp_path / "mono_blocked.pdf",
+        dual_out_path=tmp_path / "dual_blocked.pdf",
+    ):
+        events.append(event)
+
+    completed = [event for event in events if event["event"] == "page_completed"][0]
+    assert completed["preserved_segments"] > 0
+

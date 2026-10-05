@@ -226,10 +226,29 @@ async def test_connection(config: AIConfig):
     if provider_norm in ["google", "google_free", "bing", "bing_free"]:
         try:
             translator = create_translator(provider_norm, target_lang="vi")
-            res = await asyncio.to_thread(translator.translate, "Hello")
-            return {"status": "success", "sample_translation": res}
+            # translate_strict, not translate: the forgiving path hands back the
+            # source text when both providers are blocked, which would report a
+            # dead translator as a healthy one.
+            res = await asyncio.to_thread(translator.translate_strict, "Hello")
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Kết nối dịch miễn phí thất bại: {str(e)}")
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Dịch miễn phí thất bại: Google/Bing không trả về bản dịch "
+                    f"({e}). Nhà dịch miễn phí thường chặn IP máy chủ cloud — "
+                    "hãy dùng API key (Gemini/OpenAI/DeepSeek)."
+                ),
+            ) from e
+
+        if res.strip().casefold() == "hello":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Dịch miễn phí trả về nguyên văn bản gốc thay vì bản dịch — "
+                    "nhà dịch đang bị chặn. Hãy dùng API key (Gemini/OpenAI/DeepSeek)."
+                ),
+            )
+        return {"status": "success", "sample_translation": res}
     
     if not config.api_key or not config.api_key.strip():
         raise HTTPException(status_code=400, detail="API key là bắt buộc cho nhà cung cấp này")
@@ -312,6 +331,7 @@ async def translate_stream(req: TranslationStreamRequest):
                             "translated_image": trans_b64,
                             "translated_text": text,
                             "has_text": event_item.get("has_text", True),
+                            "preserved_segments": event_item.get("preserved_segments", 0),
                             "engine_mode": "pdf2zh_layout",
                         }
                         translated_pages.append(page_result)

@@ -294,6 +294,19 @@ class BaseTranslator:
         self.lang_in = lang_in
         self.lang_out = lang_out
         self._cache: dict[str, str] = {}
+        # Counts segments whose translation was abandoned and the source text
+        # kept instead. Callers surface this so a silent, fully untranslated
+        # document cannot be mistaken for a successful one.
+        self.preserved_count = 0
+
+    def translate_strict(self, text: str) -> str:
+        """Translate without any source-text fallback.
+
+        ``translate`` is deliberately forgiving, which is right for a long
+        document but wrong for a connection check: it would report success while
+        handing back the untranslated input.
+        """
+        return self.translate(text)
 
     def translate(self, text: str) -> str:
         """
@@ -361,7 +374,12 @@ class _FreeWebTranslator(BaseTranslator):
         except _PreserveSourceText:
             # Do not cache this result: a later paragraph or retry may recover
             # after the upstream rate limit / challenge page has cleared.
+            self.preserved_count += 1
             return normalize_tokens(text)
+
+    def translate_strict(self, text: str) -> str:
+        """Bypass the source-text fallback so the caller sees the failure."""
+        return BaseTranslator.translate(self, text)
 
     @staticmethod
     def _is_retryable(exc: Exception) -> bool:
@@ -560,7 +578,9 @@ class GoogleFreeTranslator(_FreeWebTranslator):
                     "the source text: %s",
                     self._error_label(fallback_exc),
                 )
-                raise _PreserveSourceText from None
+                raise _PreserveSourceText(
+                    "Google and Bing both failed; the source text was kept"
+                ) from None
 
 
 class BingFreeTranslator(_FreeWebTranslator):
@@ -748,7 +768,9 @@ class BingFreeTranslator(_FreeWebTranslator):
                     "the source text: %s",
                     self._error_label(fallback_exc),
                 )
-                raise _PreserveSourceText from None
+                raise _PreserveSourceText(
+                    "Bing and Google both failed; the source text was kept"
+                ) from None
 
 
 def build_llm_system_prompt(target_lang: str, custom_prompt: Optional[str] = None) -> str:

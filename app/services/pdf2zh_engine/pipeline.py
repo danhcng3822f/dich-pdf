@@ -199,6 +199,7 @@ async def process_pdf2zh_stream(
 
         for seq_idx, pno in enumerate(target_pages):
             converter.last_page_text = ""
+            preserved_before = getattr(translator, "preserved_count", 0)
             if cancellation_event and cancellation_event.is_set():
                 raise asyncio.CancelledError("PDF translation task cancelled")
 
@@ -248,6 +249,9 @@ async def process_pdf2zh_stream(
             # 7. Render translated page image
             trans_b64 = render_pixmap_base64(doc_zh[pno], zoom=zoom)
             text_summary = getattr(converter, "last_page_text", "")
+            # A page whose segments all fell back to the source text was not
+            # translated at all, even though nothing raised. Say so.
+            preserved = getattr(translator, "preserved_count", 0) - preserved_before
 
             # 8. Yield page completed event
             yield {
@@ -259,6 +263,7 @@ async def process_pdf2zh_stream(
                 "translated_image": trans_b64,
                 "translated_text": text_summary or "",
                 "has_text": source_has_text,
+                "preserved_segments": preserved,
             }
 
         # Font subsetting (optional fallback)

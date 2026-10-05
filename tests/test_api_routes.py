@@ -69,7 +69,7 @@ def test_download_not_found():
 def test_test_connection_google_free():
     with patch("app.api.routes.create_translator") as mock_create:
         mock_translator = MagicMock()
-        mock_translator.translate.return_value = "Xin chào"
+        mock_translator.translate_strict.return_value = "Xin chào"
         mock_create.return_value = mock_translator
 
         response = client.post(
@@ -86,7 +86,7 @@ def test_test_connection_google_free():
 def test_test_connection_google_free_error():
     with patch("app.api.routes.create_translator") as mock_create:
         mock_translator = MagicMock()
-        mock_translator.translate.side_effect = RuntimeError("Connection timeout")
+        mock_translator.translate_strict.side_effect = RuntimeError("Connection timeout")
         mock_create.return_value = mock_translator
 
         response = client.post(
@@ -95,6 +95,23 @@ def test_test_connection_google_free_error():
         )
         assert response.status_code == 400
         assert "Connection timeout" in response.json()["detail"]
+
+
+def test_test_connection_rejects_untranslated_sample():
+    """A blocked free provider hands back the source text. Reporting that as
+    success is what let a fully untranslated document look healthy."""
+    with patch("app.api.routes.create_translator") as mock_create:
+        mock_translator = MagicMock()
+        mock_translator.translate_strict.return_value = "Hello"
+        mock_create.return_value = mock_translator
+
+        response = client.post(
+            "/api/test-connection",
+            json={"provider": "google_free"}
+        )
+
+        assert response.status_code == 400
+        assert "nguyên văn bản gốc" in response.json()["detail"]
 
 
 def test_test_connection_paid_provider():
