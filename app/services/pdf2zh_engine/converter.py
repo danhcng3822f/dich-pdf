@@ -113,6 +113,31 @@ def get_char_baseline_y(child: Any) -> float:
     return float(getattr(child, "y0", 0.0))
 
 
+def starts_new_text_block(child: Any, previous: Any) -> bool:
+    """Whether a character begins a different block of text rather than continuing.
+
+    A font-size change alone is not enough to tell them apart: subscripts and
+    superscripts shrink the font and return to body size in the middle of a line.
+    Splitting a sentence there leaves the first half with ``brk=False``, so it is
+    never wrapped, and once the substituted font renders it wider than the source
+    font the two halves are drawn on top of each other. A real block change also
+    starts a new line.
+    """
+    if previous is None:
+        return False
+
+    child_size = float(child.size)
+    previous_size = float(previous.size)
+    if abs(float(child.y0) - float(previous.y0)) <= 0.7 * max(child_size, previous_size):
+        return False
+    if abs(child_size - previous_size) > 1.2:
+        return True
+    if previous_size <= 0:
+        return False
+    ratio = child_size / previous_size
+    return ratio > 1.25 or ratio < 0.8
+
+
 def is_white_or_near_white(color: Any) -> bool:
     """Check if a color is pure white or indistinguishable from white."""
     if color is None:
@@ -511,19 +536,7 @@ class TranslateConverter(PDFConverterEx):
                         vfix = 0
 
                 if not vstk:
-                    font_size_shifted = (
-                        xt is not None
-                        and (
-                            abs(child.size - xt.size) > 1.2
-                            or (
-                                xt.size > 0
-                                and (
-                                    child.size / xt.size > 1.25
-                                    or child.size / xt.size < 0.8
-                                )
-                            )
-                        )
-                    )
+                    font_size_shifted = starts_new_text_block(child, xt)
                     vertical_gap_large = (
                         xt is not None
                         and child.x1 < xt.x0

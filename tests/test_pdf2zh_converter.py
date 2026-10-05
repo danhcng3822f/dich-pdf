@@ -1,5 +1,6 @@
 import io
 import re
+from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock
 import numpy as np
 import pymupdf
@@ -18,6 +19,7 @@ from app.services.pdf2zh_engine import (
     OpType,
     patch_page,
     resolve_visible_color,
+    starts_new_text_block,
 )
 from app.services.pdf2zh_engine.pdfinterp import safe_float
 from app.services.pdf2zh_engine.adapter import BaseTranslator
@@ -856,3 +858,36 @@ def test_visible_color_clamps_paragraph_outside_page():
     outside = Paragraph(500.0, 500.0, 500.0, 560.0, 500.0, 560.0, 10.0, False, 1.0)
 
     assert resolve_visible_color(1.0, outside, render) == 1.0
+
+
+def _glyph(size: float, y0: float):
+    return SimpleNamespace(size=size, y0=y0)
+
+
+def test_subscript_does_not_start_a_new_block():
+    """A subscript drops the font size and returns to body size mid-line.
+    Splitting a paragraph there left the first half unwrappable, and it was then
+    drawn on top of the second half once the substituted font rendered wider."""
+    body = _glyph(size=9.0, y0=200.0)
+    subscript = _glyph(size=5.93, y0=194.7)  # 5.3pt below, as in "a_z"
+
+    assert starts_new_text_block(subscript, body) is False
+
+
+def test_size_change_on_a_new_line_starts_a_new_block():
+    """A heading followed by smaller body text is still a block change."""
+    heading = _glyph(size=18.0, y0=200.0)
+    body = _glyph(size=12.0, y0=185.0)  # 15pt below, past 0.7 * 18
+
+    assert starts_new_text_block(body, heading) is True
+
+
+def test_same_size_on_a_new_line_is_not_a_size_shift():
+    first = _glyph(size=12.0, y0=200.0)
+    second = _glyph(size=12.0, y0=186.0)
+
+    assert starts_new_text_block(second, first) is False
+
+
+def test_no_previous_glyph_never_starts_a_block():
+    assert starts_new_text_block(_glyph(size=12.0, y0=200.0), None) is False
