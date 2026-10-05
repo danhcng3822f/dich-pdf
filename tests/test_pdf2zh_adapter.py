@@ -18,7 +18,11 @@ from app.services.pdf2zh_engine.adapter import (
     create_adapter,
     normalize_tokens,
 )
-from app.services.ai_service import AIConfig, parse_chat_completion
+from app.services.ai_service import (
+    AIConfig,
+    describe_provider_error,
+    parse_chat_completion,
+)
 
 
 class DummyTranslator(BaseTranslator):
@@ -891,3 +895,30 @@ def test_parse_chat_completion_tolerates_sse_terminator():
 def test_parse_chat_completion_rejects_a_body_with_no_json():
     with pytest.raises(ValueError):
         parse_chat_completion("data: [DONE]")
+
+
+def test_provider_html_error_page_becomes_a_short_message():
+    """A dead tunnel answers with Cloudflare's 1016 page. Putting that whole page
+    into the UI gave the user thousands of characters of markup to read."""
+    body = (
+        "<!DOCTYPE html><html><head>"
+        "<title>Origin DNS error | captured-graphs-procedures-staying."
+        "trycloudflare.com | Cloudflare</title></head><body>"
+        + "<p>Cloudflare filler</p>" * 400
+        + "</body></html>"
+    )
+
+    message = describe_provider_error(530, body)
+
+    assert "530" in message
+    assert "Origin DNS error" in message
+    assert "<" not in message
+    assert len(message) < 400
+
+
+def test_provider_plain_error_body_is_truncated():
+    message = describe_provider_error(401, "invalid api key. " * 200)
+
+    assert "401" in message
+    assert "invalid api key" in message
+    assert len(message) < 400

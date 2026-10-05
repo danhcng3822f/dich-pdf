@@ -1,8 +1,33 @@
+import html
 import json
+import re
 
 import httpx
 from pydantic import BaseModel, Field
 from typing import Optional
+
+
+def describe_provider_error(status_code: int, body: str) -> str:
+    """A short, actionable message instead of a wall of HTML.
+
+    A gateway in front of a self-hosted provider answers with an HTML error page
+    (Cloudflare's 1016 "Origin DNS error" when the tunnel behind the Base URL is
+    down, for example). Putting that whole page into the UI tells the user
+    nothing: it is thousands of characters of markup with the one useful fact,
+    the page title, buried inside.
+    """
+    text = (body or "").strip()
+    if text[:1] == "<" or "<html" in text[:200].lower():
+        title = re.search(
+            r"<title[^>]*>(.*?)</title>", text, re.IGNORECASE | re.DOTALL
+        )
+        headline = html.unescape(title.group(1)).strip() if title else "an HTML page"
+        return (
+            f"AI Provider error ({status_code}): the provider returned an HTML page "
+            f"({headline!r}) instead of a completion. The Base URL is probably "
+            "unreachable - check that it is running and still points at your server"
+        )
+    return f"AI Provider error ({status_code}): {text[:300]}"
 
 
 def parse_chat_completion(body: str) -> dict:
@@ -101,7 +126,7 @@ async def translate_openai_compatible(text: str, system_prompt: str, config: AIC
     async with httpx.AsyncClient(timeout=90.0) as client:
         resp = await client.post(url, json=payload, headers=headers)
         if resp.status_code != 200:
-            raise RuntimeError(f"AI Provider error ({resp.status_code}): {resp.text}")
+            raise RuntimeError(describe_provider_error(resp.status_code, resp.text))
         data = parse_chat_completion(resp.text)
         try:
             return data["choices"][0]["message"]["content"].strip()

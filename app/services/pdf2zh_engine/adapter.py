@@ -11,7 +11,11 @@ from urllib.parse import urlparse
 
 import httpx
 
-from app.services.ai_service import AIConfig, parse_chat_completion
+from app.services.ai_service import (
+    AIConfig,
+    describe_provider_error,
+    parse_chat_completion,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -828,7 +832,7 @@ class LLMTranslator(BaseTranslator):
         with httpx.Client(timeout=self.timeout) as client:
             resp = client.post(url, json=payload, headers=headers)
             if resp.status_code != 200:
-                raise RuntimeError(f"AI Provider error ({resp.status_code}): {resp.text}")
+                raise RuntimeError(describe_provider_error(resp.status_code, resp.text))
             data = parse_chat_completion(resp.text)
             try:
                 return data["choices"][0]["message"]["content"].strip()
