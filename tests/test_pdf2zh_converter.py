@@ -19,6 +19,7 @@ from app.services.pdf2zh_engine import (
     OpType,
     patch_page,
     resolve_visible_color,
+    is_formula_only_paragraph,
     starts_new_text_block,
 )
 from app.services.pdf2zh_engine.pdfinterp import safe_float
@@ -891,3 +892,41 @@ def test_same_size_on_a_new_line_is_not_a_size_shift():
 
 def test_no_previous_glyph_never_starts_a_block():
     assert starts_new_text_block(_glyph(size=12.0, y0=200.0), None) is False
+
+
+def test_formula_paragraphs_are_detected():
+    """Real fragments measured on Schaum's Electromagnetics p.60. A display
+    formula is two-dimensional, so redrawing it linearly scrambles it."""
+    assert is_formula_only_paragraph("2 182 {v13}r V/m") is True
+    assert is_formula_only_paragraph("E {v11}") is True
+    assert is_formula_only_paragraph("{v12}") is True
+    assert is_formula_only_paragraph("2 182 45 cos {v16}") is True
+
+
+def test_bare_formula_fragments_without_a_token_are_detected():
+    """The accumulator splits a formula into pieces; the ones with no token
+    left were still redrawn linearly and landed on top of the formula."""
+    assert is_formula_only_paragraph("d") is True
+    assert is_formula_only_paragraph("2 182") is True
+    assert is_formula_only_paragraph("V/m") is True
+
+
+def test_prose_with_an_inline_formula_stays_prose():
+    assert (
+        is_formula_only_paragraph(
+            "line charges of density {v0} 4 nC/m lie in the x {v1} 0 plane"
+        )
+        is False
+    )
+    assert (
+        is_formula_only_paragraph(
+            "The line charges are both parallel to a{v10}; their fields are radial"
+        )
+        is False
+    )
+
+
+def test_short_prose_fragments_are_not_treated_as_formula():
+    """Two letters in a row means a real word, so short prose is still translated."""
+    assert is_formula_only_paragraph("at x = 0") is False
+    assert is_formula_only_paragraph("Fig. 3-16") is False

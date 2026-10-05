@@ -138,6 +138,45 @@ def starts_new_text_block(child: Any, previous: Any) -> bool:
     return ratio > 1.25 or ratio < 0.8
 
 
+_FORMULA_TOKEN_RE = re.compile(r"\{\s*v[\d\s]+\}", re.IGNORECASE)
+_PROSE_WORD_RE = re.compile(r"[^\W\d_]{4,}", re.UNICODE)
+_TWO_LETTERS_RE = re.compile(r"[^\W\d_]{2,}", re.UNICODE)
+
+# `id` is shadowed by a loop variable in receive_layout, so capture the builtin.
+_OBJECT_ID = id
+
+# Longest run of non-token characters still treated as mathematics. Real prose
+# with an inline formula is far longer than this.
+_FORMULA_GLUE_LIMIT = 24
+
+
+def is_formula_only_paragraph(text: str) -> bool:
+    """Whether a paragraph is mathematics rather than prose.
+
+    A display formula is a two-dimensional arrangement, but PDFMiner reads it in
+    content-stream order, which for a fraction is not left-to-right: the source
+    for ``18/sqrt(2)`` is read as ``1``, ``8``, ``2``. Redrawing that linearly
+    scrambles the formula and interleaves it with the frozen glyphs, and sending
+    it to a translator turns symbols such as ``dE`` into words. Such a paragraph
+    is reproduced verbatim at its original coordinates instead.
+
+    Prose carrying an inline formula ("... of density {v0} 4 nC/m ...") still
+    counts as prose and is translated normally.
+    """
+    if not _FORMULA_TOKEN_RE.search(text):
+        # A bare fragment such as "d", "=" or "2 182": part of a formula that the
+        # paragraph accumulator split off. Two or more letters in a row means a
+        # real word, so a short prose fragment like "at x = 0" is still prose.
+        compact = re.sub(r"\s+", "", text)
+        return bool(compact) and len(compact) <= 6 and not _TWO_LETTERS_RE.search(
+            compact
+        )
+    remainder = _FORMULA_TOKEN_RE.sub(" ", text)
+    if _PROSE_WORD_RE.search(remainder):
+        return False
+    return len(re.sub(r"\s+", "", remainder)) <= _FORMULA_GLUE_LIMIT
+
+
 def is_white_or_near_white(color: Any) -> bool:
     """Check if a color is pure white or indistinguishable from white."""
     if color is None:
@@ -390,6 +429,9 @@ class TranslateConverter(PDFConverterEx):
         # Paragraph stacks
         sstk: List[str] = []
         pstk: List[Paragraph] = []
+        # Source glyphs belonging to each paragraph, parallel to sstk/pstk.
+        # Formula paragraphs are reproduced from these instead of from the text.
+        gstk: List[List[Any]] = []
         vbkt: int = 0
 
         # Formula buffers
@@ -516,6 +558,7 @@ class TranslateConverter(PDFConverterEx):
                             sstk[-1] += f"{{v{len(var)}}}"
                         else:
                             sstk.append(f"{{v{len(var)}}}")
+                            gstk.append([])
                             pstk.append(
                                 Paragraph(
                                     get_char_baseline_y(child),
@@ -567,6 +610,7 @@ class TranslateConverter(PDFConverterEx):
                             pstk[-1].brk = True
                     else:
                         sstk.append("")
+                        gstk.append([])
                         pstk.append(
                             Paragraph(
                                 get_char_baseline_y(child),
@@ -591,6 +635,8 @@ class TranslateConverter(PDFConverterEx):
                             if child.size <= pstk[-1].size * 1.25:
                                 pstk[-1].size = max(pstk[-1].size, child.size)
                         sstk[-1] += child.get_text()
+                        if gstk:
+                            gstk[-1].append(child)
                 else:
                     if not vstk and cls == xt_cls and xt is not None and child.x0 > xt.x0:
                         vfix = child.y0 - xt.y0
@@ -639,6 +685,7 @@ class TranslateConverter(PDFConverterEx):
                 sstk[-1] += f"{{v{len(var)}}}"
             else:
                 sstk.append(f"{{v{len(var)}}}")
+                gstk.append([])
                 pstk.append(
                     Paragraph(
                         get_char_baseline_y(vstk[0]),
@@ -673,6 +720,10 @@ class TranslateConverter(PDFConverterEx):
 
         def worker(s: str) -> str:
             if not s.strip() or re.match(r"^\{v\d+\}$", s.strip()):
+                return s
+            if is_formula_only_paragraph(s):
+                # Mathematics: there is nothing to translate, and asking would
+                # turn "dE" or "a_z" into unrelated words.
                 return s
             try:
                 return self.translator.translate(s)
@@ -858,6 +909,14 @@ class TranslateConverter(PDFConverterEx):
             flush_run()
             return cursor
 
+        # Source glyphs, for reproducing formula paragraphs at their own
+        # coordinates instead of re-flowing them linearly.
+        page_glyphs: List[Any] = [
+            child for child in ltpage if isinstance(child, LTChar)
+        ]
+        emitted_glyphs: set = set()
+        emitted_rule_tokens: set = set()
+
         for id, new in enumerate(news):
             if id >= len(pstk):
                 continue
@@ -932,6 +991,66 @@ class TranslateConverter(PDFConverterEx):
                     y,
                     paragraph_color,
                 )
+                continue
+
+            if is_formula_only_paragraph(translation_sources[id]):
+                # Mathematics is two-dimensional and PDFMiner reads it in
+                # content-stream order, which for a fraction is numerator then
+                # denominator rather than left to right. A linear redraw
+                # therefore scrambles it and interleaves it with the frozen
+                # glyphs, so every glyph this paragraph owns is put back exactly
+                # where it already was.
+                token_ids = [
+                    int(re.sub(r"[^0-9]", "", token.group(0)))
+                    for token in _FORMULA_TOKEN_RE.finditer(translation_sources[id])
+                ]
+                own_glyphs: List[Any] = list(gstk[id]) if id < len(gstk) else []
+                for token_id in token_ids:
+                    own_glyphs.extend(var[token_id])
+
+                for glyph in own_glyphs:
+                    if _OBJECT_ID(glyph) in emitted_glyphs:
+                        continue
+                    emitted_glyphs.add(_OBJECT_ID(glyph))
+                    glyph_text = glyph.get_text()
+                    glyph_char = chr(
+                        getattr(
+                            glyph,
+                            "cid",
+                            ord(glyph_text[:1]) if glyph_text else 32,
+                        )
+                    )
+                    glyph_font = self.fontid.get(
+                        getattr(glyph, "font", None),
+                        str(getattr(glyph, "fontname", self.noto_name)),
+                    )
+                    ops_list.append(
+                        gen_op_txt(
+                            str(glyph_font),
+                            glyph.size,
+                            float(glyph.x0),
+                            float(glyph.y0),
+                            raw_string(str(glyph_font), glyph_char),
+                            getattr(
+                                getattr(glyph, "graphicstate", None),
+                                "ncolor",
+                                paragraph_color,
+                            ),
+                        )
+                    )
+                for token_id in token_ids:
+                    emitted_rule_tokens.add(token_id)
+                    for rule in varl[token_id]:
+                        if rule.linewidth < 5:
+                            ops_list.append(
+                                gen_op_line(
+                                    rule.pts[0][0],
+                                    rule.pts[0][1],
+                                    rule.pts[1][0] - rule.pts[0][0],
+                                    rule.pts[1][1] - rule.pts[0][1],
+                                    rule.linewidth,
+                                )
+                            )
                 continue
 
             ops_vals: List[dict] = []
@@ -1019,6 +1138,11 @@ class TranslateConverter(PDFConverterEx):
                     if fcur is not None:
                         fix = varf[vid]
                     for vch in var[vid]:
+                        if _OBJECT_ID(vch) in emitted_glyphs:
+                            # Already put back at its own coordinates by a
+                            # formula paragraph; drawing it again here would
+                            # land it somewhere else and double the glyph.
+                            continue
                         vc = chr(
                             getattr(
                                 vch,
@@ -1060,6 +1184,11 @@ class TranslateConverter(PDFConverterEx):
                                 fix + y + vch.y0 - var[vid][0].y0,
                             )
                     for l in varl[vid]:
+                        if vid in emitted_rule_tokens:
+                            # Rules of a token already drawn verbatim with its
+                            # formula paragraph; drawing them again here would
+                            # put a second bar across the formula.
+                            break
                         if l.linewidth < 5:
                             ops_vals.append({
                                 "type": OpType.LINE,
