@@ -162,6 +162,64 @@ def resolve_paragraph_color(paragraph: Paragraph) -> Any:
     return paragraph.color if paragraph.color is not None else colors[0]
 
 
+def resolve_visible_color(color: Any, paragraph: Paragraph, render: Any) -> Any:
+    """Return a text colour that is actually visible on the rendered page.
+
+    PDFMiner reports the non-stroking colour it tracked, but that value can be
+    stale: text drawn after a white fill, or through a colour space PDFMiner does
+    not map to ``ncolor``, inherits the previous white. The paragraph is then
+    painted white on a white page and disappears, even though it is still present
+    in the text layer. Figure labels lose their colour exactly this way.
+
+    The rendered page is the ground truth, so when the resolved colour is
+    near-white, sample the paragraph's own area in the source render:
+
+    - light background: white text would be invisible, so use the darkest colour
+      actually present in that area;
+    - dark background: white text is intentional (e.g. a Beamer slide), keep it;
+    - nothing dark found: keep the original colour rather than invent one.
+
+    ``render`` is a PyMuPDF Pixmap of the page as it was before patching, or
+    ``None`` when no render is available (then the colour is unchanged).
+    """
+    if render is None or not is_white_or_near_white(color):
+        return color
+
+    try:
+        height = int(render.height)
+        width = int(render.width)
+        components = int(getattr(render, "n", 3))
+        if components < 3 or height <= 0 or width <= 0:
+            return color
+
+        # PDFMiner y grows upward, pixmap rows grow downward.
+        left = int(max(0, min(width - 1, paragraph.x0)))
+        right = int(max(1, min(width, paragraph.x1)))
+        top = int(max(0, min(height - 1, height - paragraph.y1)))
+        bottom = int(max(1, min(height, height - paragraph.y0)))
+        if right <= left or bottom <= top:
+            return color
+
+        buffer = np.frombuffer(render.samples, np.uint8)
+        image = buffer.reshape(height, width, components)[top:bottom, left:right, :3]
+        if image.size == 0:
+            return color
+        image = image.astype(np.float32) / 255.0
+
+        luminance = image @ np.array([0.299, 0.587, 0.114], dtype=np.float32)
+        if float(np.median(luminance)) <= 0.5:
+            return color  # white text on a dark background is intentional
+
+        darkest = int(np.argmin(luminance))
+        red, green, blue = image.reshape(-1, 3)[darkest]
+        if float(max(red, green, blue)) > 0.5:
+            return color  # nothing dark enough here; do not invent a colour
+        return (float(red), float(green), float(blue))
+    except Exception as exc:  # pragma: no cover - defensive, colour is cosmetic
+        log.warning("Could not sample rendered text colour: %s", exc)
+        return color
+
+
 class PDFConverterEx(PDFConverter):
     def __init__(
         self,
@@ -258,6 +316,9 @@ class TranslateConverter(PDFConverterEx):
         self.prompt = prompt
         self.ignore_cache = ignore_cache
         self.last_page_text: str = ""
+        # Render of the page being patched, set by the caller before processing.
+        # Used as ground truth for text colour when PDFMiner reports a stale one.
+        self.page_render: Any = None
 
         if translator is not None:
             self.translator = translator
@@ -790,7 +851,9 @@ class TranslateConverter(PDFConverterEx):
             tx: float = x
             fcur_ = fcur
             ptr: int = 0
-            paragraph_color = resolve_paragraph_color(pstk[id])
+            paragraph_color = resolve_visible_color(
+                resolve_paragraph_color(pstk[id]), pstk[id], self.page_render
+            )
 
             toc_page_number = pstk[id].toc_page_number
             if toc_page_number is not None:
@@ -1358,6 +1421,7 @@ def patch_page(
 
         page_no = getattr(page, "number", 0)
         converter.layout[page_no] = box
+        converter.page_render = pix
 
         pdf_bytes = page.parent.tobytes()
         parser = PDFParser(io.BytesIO(pdf_bytes))

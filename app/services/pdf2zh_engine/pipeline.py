@@ -222,6 +222,7 @@ async def process_pdf2zh_stream(
             box = build_page_layout(page, pix, model)
 
             converter.layout[pno] = box
+            converter.page_render = pix
 
             # 4. Prepare stream xref on page in doc_zh
             page_xref = doc_zh.get_new_xref()

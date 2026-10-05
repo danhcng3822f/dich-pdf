@@ -31,6 +31,7 @@ from .converter import (
     build_text_block_layout,
     refine_table_layout,
     resolve_paragraph_color,
+    resolve_visible_color,
     get_char_baseline_y,
     patch_page,
 )
@@ -70,6 +71,7 @@ __all__ = [
     "build_text_block_layout",
     "refine_table_layout",
     "resolve_paragraph_color",
+    "resolve_visible_color",
     "get_char_baseline_y",
     "patch_page",
     "render_pixmap_base64",

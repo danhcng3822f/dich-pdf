@@ -17,6 +17,7 @@ from app.services.pdf2zh_engine import (
     Paragraph,
     OpType,
     patch_page,
+    resolve_visible_color,
 )
 from app.services.pdf2zh_engine.pdfinterp import safe_float
 from app.services.pdf2zh_engine.adapter import BaseTranslator
@@ -795,3 +796,63 @@ def test_pdfinterp_colorspace_and_scn_sc_operators():
     child = interp.dup()
     assert child.scs == interp.scs
     assert child.ncs == interp.ncs
+
+
+class FakeRender:
+    """Minimal stand-in for a PyMuPDF Pixmap: RGB samples plus dimensions."""
+
+    def __init__(self, image: np.ndarray) -> None:
+        self._image = np.ascontiguousarray(image, dtype=np.uint8)
+        self.height, self.width, self.n = self._image.shape
+        self.samples = self._image.tobytes()
+
+
+def _label_paragraph(color=None) -> Paragraph:
+    # Paragraph(y, x, x0, x1, y0, y1, size, brk, color)
+    return Paragraph(10.0, 10.0, 10.0, 70.0, 10.0, 70.0, 10.0, False, color)
+
+
+def _page_render(background: int, glyph: int) -> FakeRender:
+    """Page whose text area holds a block of `glyph` pixels on `background`."""
+    image = np.full((80, 120, 3), background, dtype=np.uint8)
+    image[10:20, 10:60] = glyph
+    return FakeRender(image)
+
+
+def test_visible_color_keeps_white_text_on_dark_background():
+    """White text on a dark slide is intentional and must stay white."""
+    render = _page_render(background=20, glyph=255)
+
+    assert resolve_visible_color(1.0, _label_paragraph(1.0), render) == 1.0
+
+
+def test_visible_color_uses_rendered_colour_when_white_on_light_page():
+    """A label PDFMiner reported as white must not be painted invisible."""
+    render = _page_render(background=250, glyph=40)
+
+    resolved = resolve_visible_color(1.0, _label_paragraph(1.0), render)
+
+    assert isinstance(resolved, tuple)
+    assert max(resolved) <= 0.5
+
+
+def test_visible_color_leaves_non_white_colours_untouched():
+    assert resolve_visible_color(0.0, _label_paragraph(0.0), None) == 0.0
+
+
+def test_visible_color_without_render_is_unchanged():
+    assert resolve_visible_color(1.0, _label_paragraph(1.0), None) == 1.0
+
+
+def test_visible_color_keeps_white_when_nothing_dark_in_area():
+    """A blank area must not make the converter invent a colour."""
+    render = _page_render(background=250, glyph=250)
+
+    assert resolve_visible_color(1.0, _label_paragraph(1.0), render) == 1.0
+
+
+def test_visible_color_clamps_paragraph_outside_page():
+    render = _page_render(background=250, glyph=40)
+    outside = Paragraph(500.0, 500.0, 500.0, 560.0, 500.0, 560.0, 10.0, False, 1.0)
+
+    assert resolve_visible_color(1.0, outside, render) == 1.0
