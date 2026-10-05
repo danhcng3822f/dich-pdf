@@ -149,6 +149,10 @@ _OBJECT_ID = id
 # with an inline formula is far longer than this.
 _FORMULA_GLUE_LIMIT = 24
 
+# Longest bare fragment (no formula token) still treated as mathematics, e.g.
+# "x x 18 V/m". Prose fragments are excluded by the two-letters-in-a-row test.
+_BARE_FRAGMENT_LIMIT = 10
+
 
 def is_formula_only_paragraph(text: str) -> bool:
     """Whether a paragraph is mathematics rather than prose.
@@ -167,9 +171,13 @@ def is_formula_only_paragraph(text: str) -> bool:
         # A bare fragment such as "d", "=" or "2 182": part of a formula that the
         # paragraph accumulator split off. Two or more letters in a row means a
         # real word, so a short prose fragment like "at x = 0" is still prose.
+        # Test the original text, not the compacted one: "a a" is two separate
+        # symbols, and stripping the space would turn it into the word "aa".
         compact = re.sub(r"\s+", "", text)
-        return bool(compact) and len(compact) <= 6 and not _TWO_LETTERS_RE.search(
-            compact
+        return (
+            bool(compact)
+            and len(compact) <= _BARE_FRAGMENT_LIMIT
+            and not _TWO_LETTERS_RE.search(text)
         )
     remainder = _FORMULA_TOKEN_RE.sub(" ", text)
     if _PROSE_WORD_RE.search(remainder):
